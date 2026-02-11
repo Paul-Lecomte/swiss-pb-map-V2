@@ -13,6 +13,7 @@ type Stop = {
 type Props = {
     onHamburger?: () => void;
     onStopSelect?: (stop: Stop) => void;
+    onAvatarClick?: () => void;
 };
 
 const typeIcons: Record<string, string> = {
@@ -22,7 +23,7 @@ const typeIcons: Record<string, string> = {
     boat: "⛴️",
 };
 
-export default function Search({ onHamburger, onStopSelect }: Props) {
+export default function Search({ onHamburger, onStopSelect, onAvatarClick }: Props) {
     const [query, setQuery] = useState("");
     const [suggestions, setSuggestions] = useState<Stop[]>([]);
     const [type, setType] = useState<string>("");
@@ -88,7 +89,12 @@ export default function Search({ onHamburger, onStopSelect }: Props) {
                     <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 </svg>
             </div>
-            <button aria-label="Profile" className="search-avatar">
+            <button
+                aria-label="Fastest path search"
+                className="search-avatar"
+                type="button"
+                onClick={onAvatarClick}
+            >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="8" r="4"></circle>
                     <path d="M6 20c0-2.2 3.6-4 6-4s6 1.8 6 4"></path>

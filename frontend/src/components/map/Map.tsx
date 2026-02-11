@@ -16,6 +16,7 @@ import Vehicle from "@/components/vehicle/Vehicle";
 import { LayerState } from "../layer_option/LayerOption";
 import StreamProgress from "@/components/progress/StreamProgress";
 import { getRouteGeometry, getRouteGeometryByTrip } from "@/services/RouteApi";
+import FastestPathSearch from "@/components/fastest_path_search/FastestPathSearch";
 
 // Layer visibility state type
 type LayerKeys = "railway" | "stations" | "tram" | "bus" | "trolleybus" | "ferry" | "backgroundPois";
@@ -33,10 +34,22 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
     const [selectedTripIndex, setSelectedTripIndex] = useState<number | null>(null);
     const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
 
+    // Realtime data state
+    const [rtData, setRtData] = useState<any>(null);
+    const rtTimerRef = useRef<number | null>(null);
+    const inFlightRtRef = useRef<boolean>(false);
+    const visibleTripIdsRef = useRef<string[]>([]);
+    const lastTripHashRef = useRef<string>('');
+    const lastCallAtRef = useRef<number>(0);
+
+    const [fastestPathOpen, setFastestPathOpen] = useState(false);
+
     // Ajout pour le highlight
     const [highlightedRouteId, setHighlightedRouteId] = useState<string | null>(null);
 
     const handleRouteClick = (route: any) => {
+        // Si FastestPath est ouvert, on le ferme pour éviter les overlays concurrents.
+        if (fastestPathOpen) setFastestPathOpen(false);
         setSelectedRoute(route);
         setHighlightedRouteId(route.properties?.route_id || `${route.properties?.route_short_name}-${route.properties?.route_long_name}`);
         setSelectedTripIndex(null);
@@ -46,6 +59,7 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
     };
 
     const handleVehicleClick = (route: any, vehicleIdx: number, tripId?: string) => {
+        if (fastestPathOpen) setFastestPathOpen(false);
         setSelectedRoute(route);
         setHighlightedRouteId(route.properties?.route_id || `${route.properties?.route_short_name}-${route.properties?.route_long_name}`);
         setSelectedTripIndex(vehicleIdx);
@@ -118,6 +132,37 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
         setSelectedTripIndex(null);
         setSelectedTripId(null);
     };
+
+    const handleOpenFastestPath = () => {
+        // Panneau exclusif: on ferme les détails de route GTFS
+        if (selectedRoute) handleCloseRoutePanel();
+
+        // Stop streaming/realtime + efface ce qui est affiché
+        try { if (streamAbortRef.current) streamAbortRef.current.abort(); } catch {}
+        isStreamingRef.current = false;
+        try { routesCacheRef.current.clear(); } catch {}
+        setRoutes([]);
+        lastBboxRoutesRef.current = new Set();
+        prevBboxRef.current = null;
+        setHighlightedRouteId(null);
+        setRtData(null);
+
+        setFastestPathOpen(true);
+    };
+
+    const handleCloseFastestPath = () => {
+        setFastestPathOpen(false);
+    };
+
+    // Disable realtime polling while FastestPath is open
+    useEffect(() => {
+        if (!fastestPathOpen) return;
+        if (rtTimerRef.current) {
+            try { window.clearInterval(rtTimerRef.current); } catch {}
+            rtTimerRef.current = null;
+        }
+        inFlightRtRef.current = false;
+    }, [fastestPathOpen]);
 
     // Remove app:layer-visibility listeners — Header will update layersVisible directly
 
@@ -495,6 +540,10 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
 
             setZoom(currentZoom);
             loadStops(bbox, currentZoom, maxZoom);
+
+            // Pendant FastestPath: ne pas rafraîchir routes/véhicules
+            if (fastestPathOpen) return;
+
             if (!routeLineOpenRef.current) requestRoutes(bbox, currentZoom);
         };
 
@@ -705,67 +754,10 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
     const showAllRoutes = layersVisible.showRoutes;
     const showAllVehicles = layersVisible.showVehicles;
 
-    // Realtime data state
-    const [rtData, setRtData] = useState<any>(null);
-    const rtTimerRef = useRef<number | null>(null);
-    const inFlightRtRef = useRef<boolean>(false);
-    const visibleTripIdsRef = useRef<string[]>([]);
-    const lastTripHashRef = useRef<string>('');
-    const lastCallAtRef = useRef<number>(0);
+    const renderRoutes = showAllRoutes && !fastestPathOpen;
+    const renderVehicles = showAllVehicles && !fastestPathOpen;
 
-    // Met à jour la liste des tripIds visibles à chaque changement de routes visibles (pas d'appel réseau ici)
-    useEffect(() => {
-        const idsSet = new Set<string>();
-        const currentVisible = (visibleRoutes as any[]) || [];
-        for (const route of currentVisible) {
-            const schedules = route?.properties?.trip_schedules as Array<{ trip_id: string; original_trip_id?: string }> | undefined;
-            if (Array.isArray(schedules)) {
-                for (const sch of schedules) {
-                    if (sch?.trip_id) idsSet.add(sch.trip_id);
-                    if (sch?.original_trip_id) idsSet.add(sch.original_trip_id);
-                }
-            }
-        }
-        visibleTripIdsRef.current = Array.from(idsSet);
-    }, [visibleRoutes]);
-
-    // Polling 15s stable (indépendant des changements de routes)
-    useEffect(() => {
-        async function tick() {
-            if (inFlightRtRef.current) return;
-            const now = Date.now();
-            // Throttle dur local: quoi qu'il arrive, pas plus fréquent que 15s
-            if (now - lastCallAtRef.current < 15000) return;
-            inFlightRtRef.current = true;
-            try {
-                if (document.hidden) return; // réduit la charge si onglet caché
-                const ids = visibleTripIdsRef.current || [];
-                const hash = ids.length ? ids.slice().sort().join(',') : '';
-                // Si mêmes ids et dernier appel il y a <15s, on saute
-                if (hash === lastTripHashRef.current && (now - lastCallAtRef.current) < 15000) return;
-                // purge ancienne data uniquement si on a des ids à demander
-                if (!ids || ids.length === 0) {
-                    setRtData({ isRealtime: false, fetchedAt: null, tripUpdatesCount: 0, tripUpdates: [] });
-                } else {
-                    setRtData(null);
-                    const data = await realtimeUpdatesByTripIds(ids);
-                    setRtData(data);
-                }
-                lastTripHashRef.current = hash;
-                lastCallAtRef.current = Date.now();
-            } catch (e) {
-                console.error('[Map] realtime filtered fetch error', e);
-                lastCallAtRef.current = Date.now();
-            } finally {
-                inFlightRtRef.current = false;
-            }
-        }
-        // premier tick immédiat, puis toutes les 15s
-        tick();
-        rtTimerRef.current = window.setInterval(tick, 15000);
-        return () => { if (rtTimerRef.current) window.clearInterval(rtTimerRef.current); };
-    }, []);
-
+    // Restore selectedRealtimeTripUpdate memo for RouteInfoPanel
     const selectedRealtimeTripUpdate = useMemo(() => {
         if (!selectedTripId || !rtData?.tripUpdates) return null;
         return rtData.tripUpdates.find((tu: any) => tu?.trip?.tripId === selectedTripId) || null;
@@ -785,8 +777,14 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
                 <Search
                     onHamburger={onHamburger}
                     onStopSelect={() => {}} // tout passe par l'event
+                    onAvatarClick={handleOpenFastestPath}
                 />
             </div>
+
+            {fastestPathOpen && (
+                <FastestPathSearch onCloseAction={handleCloseFastestPath} />
+            )}
+
             <MapContainer
                 center={[46.516, 6.63282]}
                 zoom={zoom}
@@ -808,7 +806,7 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
                 <MapEvents />
 
                 {/* Route lines */}
-                {showAllRoutes && visibleRoutes.map((route: any) => {
+                {renderRoutes && visibleRoutes.map((route: any) => {
                     const id = route.properties?.route_id || `${route.properties?.route_short_name}-${route.properties?.route_long_name}`;
                     return (
                         <RouteLine
@@ -822,7 +820,7 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
                 })}
 
                 {/* Vehicles */}
-                {showAllVehicles && visibleRoutes.map((route: any) => {
+                {renderVehicles && visibleRoutes.map((route: any) => {
                     const id = route.properties?.route_id || `${route.properties?.route_short_name}-${route.properties?.route_long_name}`;
                     const fullRoute = routesCacheRef.current.get(id)?.route || route;
                     const coords = fullRoute.geometry?.coordinates || [];
