@@ -95,10 +95,7 @@ export default function Search({ onHamburger, onStopSelect, onAvatarClick }: Pro
                 type="button"
                 onClick={onAvatarClick}
             >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="8" r="4"></circle>
-                    <path d="M6 20c0-2.2 3.6-4 6-4s6 1.8 6 4"></path>
-                </svg>
+                <img src="/fastest_path.png" alt="Fastest path" className="h-4 w-4 object-contain" draggable={false} />
             </button>
             {suggestions.length > 0 && (
                 <ul className="search-suggestions">
