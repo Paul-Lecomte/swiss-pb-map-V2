@@ -36,6 +36,7 @@ type StopOption = {
   stop_lat?: number;
   stop_lon?: number;
 };
+type PickMode = "start" | "end" | null;
 
 const FastestPathSearch = ({ onCloseAction }: Props) => {
   const [startLocation, setStartLocation] = useState("Lausanne");
@@ -53,10 +54,17 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   const [endOptions, setEndOptions] = useState<StopOption[]>([]);
   const [isSearchingStart, setIsSearchingStart] = useState(false);
   const [isSearchingEnd, setIsSearchingEnd] = useState(false);
+  const [pickMode, setPickMode] = useState<PickMode>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => abortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      window.dispatchEvent(new CustomEvent("app:fastest-path-pick", { detail: { mode: null } }));
+    };
   }, []);
 
   useEffect(() => {
@@ -184,10 +192,65 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       ? `Route: ${selectedRoute.from.name} -> ${selectedRoute.to.name}`
       : "Search results";
 
+  useEffect(() => {
+    const handler = (e: any) => {
+      const mode = e?.detail?.mode as PickMode;
+      const stop = e?.detail?.stop as StopOption | undefined;
+      if (!mode || !stop) return;
+      if (mode === "start") {
+        setStartStop(stop);
+        setStartLocation(stop.stop_name);
+        setStartOptions([]);
+      } else {
+        setEndStop(stop);
+        setDestination(stop.stop_name);
+        setEndOptions([]);
+      }
+      setPickMode(null);
+    };
+    window.addEventListener("app:fastest-path-stop", handler as EventListener);
+    return () => window.removeEventListener("app:fastest-path-stop", handler as EventListener);
+  }, []);
+
+  const handlePickMode = (mode: PickMode) => {
+    const nextMode = pickMode === mode ? null : mode;
+    setPickMode(nextMode);
+    window.dispatchEvent(new CustomEvent("app:fastest-path-pick", { detail: { mode: nextMode } }));
+  };
+
+  const selectTopStart = () => {
+    const top = startOptions[0];
+    if (!top) return;
+    setStartLocation(top.stop_name);
+    setStartStop(top);
+    setStartOptions([]);
+  };
+
+  const selectTopEnd = () => {
+    const top = endOptions[0];
+    if (!top) return;
+    setDestination(top.stop_name);
+    setEndStop(top);
+    setEndOptions([]);
+  };
+
   return (
-    <div className="absolute left-6 top-[92px] z-[130] w-[min(94vw,720px)] max-w-[94vw]">
+    <div
+      className={`absolute left-6 top-[92px] z-[130] w-[min(94vw,720px)] max-w-[94vw] transition-all duration-200 ${
+        pickMode ? "max-w-[360px] opacity-90" : ""
+      }`}
+    >
       {!selectedRoute && (
-        <div className="space-y-4 rounded-[28px] bg-white p-5 shadow-2xl border border-neutral-100">
+        <div
+          className={`space-y-4 rounded-[28px] bg-white shadow-2xl border border-neutral-100 transition-all duration-200 ${
+            pickMode ? "p-3" : "p-5"
+          }`}
+        >
+          {pickMode && (
+            <div className="rounded-[16px] border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+              Click on the map to set the {pickMode === "start" ? "start" : "destination"} stop.
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <div className="text-sm font-semibold text-neutral-800">Fastest path</div>
             <button
@@ -216,7 +279,29 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                     setStartLocation(event.target.value);
                     setStartStop(null);
                   }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !startStop && startOptions.length) {
+                      event.preventDefault();
+                      selectTopStart();
+                    }
+                  }}
                 />
+                <div className="flex items-center justify-between text-xs text-neutral-400">
+                  <button
+                    type="button"
+                    onClick={() => handlePickMode("start")}
+                    className={`rounded-full border px-2 py-0.5 transition ${
+                      pickMode === "start"
+                        ? "border-blue-300 text-blue-600 bg-blue-50"
+                        : "border-neutral-200 text-neutral-500 hover:border-neutral-300"
+                    }`}
+                  >
+                    {pickMode === "start" ? "Click on map to pick start" : "Pick start on map"}
+                  </button>
+                  {startStop && (
+                    <span className="text-neutral-500">Selected: {startStop.stop_name}</span>
+                  )}
+                </div>
                 {isSearchingStart && (
                   <div className="text-xs text-neutral-400">Searching...</div>
                 )}
@@ -248,7 +333,29 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                     setDestination(event.target.value);
                     setEndStop(null);
                   }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !endStop && endOptions.length) {
+                      event.preventDefault();
+                      selectTopEnd();
+                    }
+                  }}
                 />
+                <div className="flex items-center justify-between text-xs text-neutral-400">
+                  <button
+                    type="button"
+                    onClick={() => handlePickMode("end")}
+                    className={`rounded-full border px-2 py-0.5 transition ${
+                      pickMode === "end"
+                        ? "border-blue-300 text-blue-600 bg-blue-50"
+                        : "border-neutral-200 text-neutral-500 hover:border-neutral-300"
+                    }`}
+                  >
+                    {pickMode === "end" ? "Click on map to pick destination" : "Pick destination on map"}
+                  </button>
+                  {endStop && (
+                    <span className="text-neutral-500">Selected: {endStop.stop_name}</span>
+                  )}
+                </div>
                 {isSearchingEnd && (
                   <div className="text-xs text-neutral-400">Searching...</div>
                 )}
