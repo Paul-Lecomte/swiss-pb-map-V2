@@ -1,12 +1,40 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import FastestPathRouteDetails, {
   RouteSummary,
 } from "../fastest_path_route/FastestPathRouteDetails";
+import { fetchFastestPath, FastestPathRequest } from "@/services/FastestPathApiCalls";
+import { searchProcessedStops } from "@/services/StopsApiCalls";
 
 type Props = {
   onCloseAction: () => void;
+};
+
+const buildDepartureDateTime = (date: string, time: string) => {
+  if (!date || !time) return null;
+  const normalizedTime = time.length === 5 ? `${time}:00` : time;
+  return `${date}T${normalizedTime}`;
+};
+
+const normalizeRoutes = (data: unknown): RouteSummary[] => {
+  if (Array.isArray(data)) return data as RouteSummary[];
+  if (data && typeof data === "object" && Array.isArray((data as { routes?: unknown }).routes)) {
+    return (data as { routes: RouteSummary[] }).routes;
+  }
+  return [];
+};
+
+const getErrorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  return "Request failed.";
+};
+
+type StopOption = {
+  stop_id: string;
+  stop_name: string;
+  stop_lat?: number;
+  stop_lon?: number;
 };
 
 const FastestPathSearch = ({ onCloseAction }: Props) => {
@@ -14,197 +42,127 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   const [destination, setDestination] = useState("Geneve");
   const [departureDate, setDepartureDate] = useState("2026-02-03");
   const [departureTime, setDepartureTime] = useState("10:55");
+  const [routes, setRoutes] = useState<RouteSummary[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [startStop, setStartStop] = useState<StopOption | null>(null);
+  const [endStop, setEndStop] = useState<StopOption | null>(null);
+  const [startOptions, setStartOptions] = useState<StopOption[]>([]);
+  const [endOptions, setEndOptions] = useState<StopOption[]>([]);
+  const [isSearchingStart, setIsSearchingStart] = useState(false);
+  const [isSearchingEnd, setIsSearchingEnd] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const routes = useMemo<RouteSummary[]>(
-    () => [
-      {
-        id: "route-1",
-        line: "IC5",
-        direction: "Direction Geneve",
-        from: { time: "08:17", name: "Lausanne", platform: "voie 8" },
-        to: { time: "10:00", name: "Geneve", platform: "voie 3" },
-        duration: "1:45",
-        segments: [
-          {
-            id: "seg-1",
-            mode: "train",
-            line: "IC5",
-            direction: "Direction Geneve",
-            travelTime: "1h 45m",
-            stops: [
-              { time: "08:17", name: "Lausanne", platform: "voie 8" },
-              { time: "09:03", name: "Morges" },
-              { time: "09:28", name: "Nyon" },
-              { time: "10:00", name: "Geneve", platform: "voie 3" },
-            ],
-          },
-        ],
-      },
-      {
-        id: "route-2",
-        line: "IC5",
-        direction: "Direction Geneve",
-        from: { time: "08:17", name: "Lausanne", platform: "voie 8" },
-        to: { time: "10:05", name: "Geneve", platform: "voie 1" },
-        duration: "1:48",
-        segments: [
-          {
-            id: "seg-2",
-            mode: "train",
-            line: "IC5",
-            direction: "Direction Geneve",
-            travelTime: "1h 02m",
-            stops: [
-              { time: "08:17", name: "Lausanne", platform: "voie 8" },
-              { time: "09:19", name: "Nyon" },
-            ],
-            transferAfter: "6min transfer",
-          },
-          {
-            id: "seg-3",
-            mode: "bus",
-            line: "Bus 12",
-            direction: "Direction Centre",
-            travelTime: "40m",
-            stops: [
-              { time: "09:25", name: "Nyon Gare" },
-              { time: "10:05", name: "Geneve", platform: "voie 1" },
-            ],
-          },
-        ],
-      },
-      {
-        id: "route-3",
-        line: "R3",
-        direction: "Direction Leman",
-        from: { time: "08:47", name: "Lausanne", platform: "voie 1" },
-        to: { time: "10:32", name: "Geneve", platform: "voie 2" },
-        duration: "1:45",
-        segments: [
-          {
-            id: "seg-4",
-            mode: "train",
-            line: "R3",
-            direction: "Direction Leman",
-            travelTime: "55m",
-            stops: [
-              { time: "08:47", name: "Lausanne", platform: "voie 1" },
-              { time: "09:42", name: "Rolle" },
-            ],
-            transferAfter: "3min transfer",
-          },
-          {
-            id: "seg-5",
-            mode: "tram",
-            line: "Tram 2",
-            direction: "Direction Cornavin",
-            travelTime: "50m",
-            stops: [
-              { time: "09:45", name: "Rolle Centre" },
-              { time: "10:32", name: "Geneve", platform: "voie 2" },
-            ],
-          },
-        ],
-      },
-      {
-        id: "route-4",
-        line: "IC5",
-        direction: "Direction Geneve",
-        from: { time: "09:10", name: "Lausanne", platform: "voie 6" },
-        to: { time: "10:50", name: "Geneve", platform: "voie 4" },
-        duration: "1:40",
-        segments: [
-          {
-            id: "seg-6",
-            mode: "walk",
-            line: "Walk",
-            direction: "To platform",
-            travelTime: "8m",
-            stops: [
-              { time: "09:10", name: "Lausanne Hall" },
-              { time: "09:18", name: "Lausanne", platform: "voie 6" },
-            ],
-            transferAfter: "2min transfer",
-          },
-          {
-            id: "seg-7",
-            mode: "train",
-            line: "IC5",
-            direction: "Direction Geneve",
-            travelTime: "1h 32m",
-            stops: [
-              { time: "09:20", name: "Lausanne", platform: "voie 6" },
-              { time: "10:50", name: "Geneve", platform: "voie 4" },
-            ],
-          },
-        ],
-      },
-      {
-        id: "route-5",
-        line: "Multi",
-        direction: "Direction Geneve Aéroport",
-        from: { time: "07:20", name: "Lausanne", platform: "voie 5" },
-        to: { time: "10:15", name: "Geneve", platform: "voie 4" },
-        duration: "2:55",
-        segments: [
-          {
-            id: "seg-8",
-            mode: "train",
-            line: "S5",
-            direction: "Direction Allaman",
-            travelTime: "22m",
-            stops: [
-              { time: "07:20", name: "Lausanne", platform: "voie 5" },
-              { time: "07:32", name: "Renens" },
-              { time: "07:42", name: "Allaman", platform: "voie 2" }
-            ],
-            transferAfter: "8min transfer"
-          },
-          {
-            id: "seg-9",
-            mode: "bus",
-            line: "Bus 724",
-            direction: "Direction Rolle",
-            travelTime: "35m",
-            stops: [
-              { time: "07:50", name: "Allaman Gare" },
-              { time: "08:10", name: "Aubonne" },
-              { time: "08:25", name: "Rolle Gare" }
-            ],
-            transferAfter: "10min transfer"
-          },
-          {
-            id: "seg-10",
-            mode: "train",
-            line: "RE33",
-            direction: "Direction Coppet",
-            travelTime: "45m",
-            stops: [
-              { time: "08:35", name: "Rolle", platform: "voie 1" },
-              { time: "08:55", name: "Nyon" },
-              { time: "09:20", name: "Coppet", platform: "voie 3" }
-            ],
-            transferAfter: "15min transfer"
-          },
-          {
-            id: "seg-11",
-            mode: "train",
-            line: "SL4",
-            direction: "Direction Annemasse",
-            travelTime: "40m",
-            stops: [
-              { time: "09:35", name: "Coppet", platform: "voie 3" },
-              { time: "09:50", name: "Versoix" },
-              { time: "10:15", name: "Geneve", platform: "voie 4" }
-            ]
-          }
-        ]
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const query = startLocation.trim();
+    if (query.length < 2) {
+      setStartOptions([]);
+      return;
+    }
+
+    setIsSearchingStart(true);
+    const timer = setTimeout(() => {
+      searchProcessedStops(query)
+        .then((data) => {
+          if (!active) return;
+          setStartOptions(Array.isArray(data) ? data : []);
+        })
+        .catch(() => {
+          if (!active) return;
+          setStartOptions([]);
+        })
+        .finally(() => {
+          if (!active) return;
+          setIsSearchingStart(false);
+        });
+    }, 300);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [startLocation]);
+
+  useEffect(() => {
+    let active = true;
+    const query = destination.trim();
+    if (query.length < 2) {
+      setEndOptions([]);
+      return;
+    }
+
+    setIsSearchingEnd(true);
+    const timer = setTimeout(() => {
+      searchProcessedStops(query)
+        .then((data) => {
+          if (!active) return;
+          setEndOptions(Array.isArray(data) ? data : []);
+        })
+        .catch(() => {
+          if (!active) return;
+          setEndOptions([]);
+        })
+        .finally(() => {
+          if (!active) return;
+          setIsSearchingEnd(false);
+        });
+    }, 300);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [destination]);
+
+  const handleSearch = async () => {
+    const departureTimeValue = buildDepartureDateTime(departureDate, departureTime);
+    if (!departureTimeValue) {
+      setErrorMessage("Please provide a valid date and time.");
+      return;
+    }
+
+    if (!startStop || !endStop) {
+      setErrorMessage("Please select both stops from the suggestions.");
+      return;
+    }
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const payload: FastestPathRequest = {
+      start_stop_id: startStop.stop_id,
+      end_stop_id: endStop.stop_id,
+      departure_time: departureTimeValue,
+      algorithm: "raptor",
+    };
+
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    try {
+      const data = await fetchFastestPath(payload, { signal: controller.signal });
+      const nextRoutes = normalizeRoutes(data);
+      if (!nextRoutes.length) {
+        setErrorMessage("No routes returned by the backend.");
       }
-    ],
-    []
-  );
+      setRoutes(nextRoutes);
+      setSelectedRouteId(null);
+      setSelectedSegmentId(null);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const selectedRoute = routes.find((route) => route.id === selectedRouteId) ?? null;
   const selectedSegment =
@@ -254,15 +212,65 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                   className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 text-base text-neutral-700 outline-none transition focus:border-neutral-300"
                   placeholder="Starting location"
                   value={startLocation}
-                  onChange={(event) => setStartLocation(event.target.value)}
+                  onChange={(event) => {
+                    setStartLocation(event.target.value);
+                    setStartStop(null);
+                  }}
                 />
+                {isSearchingStart && (
+                  <div className="text-xs text-neutral-400">Searching...</div>
+                )}
+                {!!startOptions.length && !startStop && (
+                  <div className="max-h-40 overflow-auto rounded-xl border border-neutral-200 bg-white text-sm shadow">
+                    {startOptions.map((stop) => (
+                      <button
+                        key={stop.stop_id}
+                        type="button"
+                        onClick={() => {
+                          setStartLocation(stop.stop_name);
+                          setStartStop(stop);
+                          setStartOptions([]);
+                        }}
+                        className="w-full px-3 py-2 text-left hover:bg-neutral-50"
+                      >
+                        <div className="text-sm text-neutral-700">{stop.stop_name}</div>
+                        <div className="text-xs text-neutral-400">{stop.stop_id}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="h-px w-full bg-neutral-200" />
                 <input
                   className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 text-base text-neutral-700 outline-none transition focus:border-neutral-300"
                   placeholder="Destination"
                   value={destination}
-                  onChange={(event) => setDestination(event.target.value)}
+                  onChange={(event) => {
+                    setDestination(event.target.value);
+                    setEndStop(null);
+                  }}
                 />
+                {isSearchingEnd && (
+                  <div className="text-xs text-neutral-400">Searching...</div>
+                )}
+                {!!endOptions.length && !endStop && (
+                  <div className="max-h-40 overflow-auto rounded-xl border border-neutral-200 bg-white text-sm shadow">
+                    {endOptions.map((stop) => (
+                      <button
+                        key={stop.stop_id}
+                        type="button"
+                        onClick={() => {
+                          setDestination(stop.stop_name);
+                          setEndStop(stop);
+                          setEndOptions([]);
+                        }}
+                        className="w-full px-3 py-2 text-left hover:bg-neutral-50"
+                      >
+                        <div className="text-sm text-neutral-700">{stop.stop_name}</div>
+                        <div className="text-xs text-neutral-400">{stop.stop_id}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -289,11 +297,39 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             </div>
           </div>
 
+          <button
+            type="button"
+            onClick={handleSearch}
+            disabled={
+              isLoading ||
+              !startLocation.trim() ||
+              !destination.trim() ||
+              !departureDate ||
+              !departureTime ||
+              !startStop ||
+              !endStop
+            }
+            className="rounded-[20px] border border-blue-200 bg-blue-50 px-6 py-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-100 disabled:text-neutral-400"
+          >
+            {isLoading ? "Searching..." : "Search"}
+          </button>
+
+          {errorMessage && (
+            <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-2 text-xs text-rose-600">
+              {errorMessage}
+            </div>
+          )}
+
           <div className="text-center text-sm font-semibold uppercase tracking-[0.3em] text-neutral-400">
             Results
           </div>
 
           <div className="results-scroll max-h-[46vh] overflow-auto rounded-[24px] bg-white px-2 py-2 border border-neutral-100">
+            {!routes.length && !isLoading && !errorMessage && (
+              <div className="px-4 py-6 text-center text-xs text-neutral-400">
+                No results yet. Launch a search to see routes.
+              </div>
+            )}
             {routes.map((route) => {
               const mode = route.segments[0]?.mode || "train";
               const badgeColors: Record<string, string> = {

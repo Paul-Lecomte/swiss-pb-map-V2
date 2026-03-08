@@ -48,7 +48,6 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/api/gtfs', require('./route/tripRoute'));
-app.use('/api/fastest_path', require('./route/fastestRoute'));
 app.use('/api/stops', require('./route/stopRoute'));
 app.use('/api/routes', require('./route/routeRoute'));
 app.use('/api/realtime', require('./route/realtimeRoute'));
