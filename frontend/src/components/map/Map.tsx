@@ -20,6 +20,7 @@ import FastestPathSearch from "@/components/fastest_path_search/FastestPathSearc
 
 // Layer visibility state type
 type LayerKeys = "railway" | "stations" | "tram" | "bus" | "trolleybus" | "ferry" | "backgroundPois";
+type FastestPathPickMode = "start" | "end" | null;
 
 const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }: { onHamburger: () => void; layersVisible: LayerState; setLayersVisible: React.Dispatch<React.SetStateAction<LayerState>>; optionPrefs?: { showRealtimeOverlay: boolean; showRouteProgress: boolean; maxRoutes?: number } }) => {
     const [stops, setStops] = useState<any[]>([]);
@@ -33,19 +34,61 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
     const [selectedRoute, setSelectedRoute] = useState<any | null>(null);
     const [selectedTripIndex, setSelectedTripIndex] = useState<number | null>(null);
     const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
-
-    // Realtime data state
+    const [fastestPathPickMode, setFastestPathPickMode] = useState<FastestPathPickMode>(null);
     const [rtData, setRtData] = useState<any>(null);
     const rtTimerRef = useRef<number | null>(null);
     const inFlightRtRef = useRef<boolean>(false);
     const visibleTripIdsRef = useRef<string[]>([]);
-    const lastTripHashRef = useRef<string>('');
+    const lastTripHashRef = useRef<string>("");
     const lastCallAtRef = useRef<number>(0);
+
+    const extractStopCandidate = (item: any) => {
+        const props = item?.properties ?? item;
+        const lat = Number(props?.stop_lat ?? item?.geometry?.coordinates?.[1]);
+        const lon = Number(props?.stop_lon ?? item?.geometry?.coordinates?.[0]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+        if (!props?.stop_id || !props?.stop_name) return null;
+        return {
+            stop_id: props.stop_id,
+            stop_name: props.stop_name,
+            stop_lat: lat,
+            stop_lon: lon,
+            location_type: props.location_type,
+            parent_station: props.parent_station,
+            routes: props.routes || []
+        };
+    };
+
+    const findNearestStopInList = (items: any[], lat: number, lon: number) => {
+        let best: any = null;
+        let bestDist = Number.POSITIVE_INFINITY;
+        for (const s of items) {
+            const candidate = extractStopCandidate(s);
+            if (!candidate) continue;
+            const dLat = candidate.stop_lat - lat;
+            const dLon = candidate.stop_lon - lon;
+            const dist = dLat * dLat + dLon * dLon;
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = candidate;
+            }
+        }
+        return best;
+    };
 
     const [fastestPathOpen, setFastestPathOpen] = useState(false);
 
     // Ajout pour le highlight
     const [highlightedRouteId, setHighlightedRouteId] = useState<string | null>(null);
+
+    useEffect(() => {
+        const handler = (e: any) => {
+            const mode = e?.detail?.mode ?? null;
+            setFastestPathPickMode(mode === "start" || mode === "end" ? mode : null);
+        };
+        window.addEventListener("app:fastest-path-pick", handler as EventListener);
+        return () => window.removeEventListener("app:fastest-path-pick", handler as EventListener);
+    }, []);
 
     const handleRouteClick = (route: any) => {
         // Si FastestPath est ouvert, on le ferme pour éviter les overlays concurrents.
@@ -551,8 +594,42 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
             triggerLoad(e.target);
         };
 
+        const onClick = (e: any) => {
+            if (!fastestPathPickMode) return;
+            const lat = e?.latlng?.lat;
+            const lon = e?.latlng?.lng;
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+            const nearestLocal = findNearestStopInList(stops, lat, lon);
+            if (nearestLocal) {
+                window.dispatchEvent(new CustomEvent("app:fastest-path-stop", { detail: { mode: fastestPathPickMode, stop: nearestLocal } }));
+                window.dispatchEvent(new CustomEvent("app:stop-select", { detail: nearestLocal }));
+                setFastestPathPickMode(null);
+                return;
+            }
+
+            const map = e?.target;
+            const currentZoom = typeof map?.getZoom === "function" ? map.getZoom() : zoom;
+            const delta = 0.01;
+            const bbox = [lon - delta, lat - delta, lon + delta, lat + delta];
+
+            void (async () => {
+                try {
+                    const data = await fetchStopsInBbox(bbox, currentZoom);
+                    const features = Array.isArray(data?.features) ? data.features : [];
+                    const nearestFetched = findNearestStopInList(features, lat, lon);
+                    if (!nearestFetched) return;
+                    window.dispatchEvent(new CustomEvent("app:fastest-path-stop", { detail: { mode: fastestPathPickMode, stop: nearestFetched } }));
+                    window.dispatchEvent(new CustomEvent("app:stop-select", { detail: nearestFetched }));
+                    setFastestPathPickMode(null);
+                } catch (err) {
+                    console.warn("[Map] pick-on-map failed", err);
+                }
+            })();
+        };
+
         useMapEvents({
             moveend: onMoveEnd as any,
+            click: onClick as any,
         });
 
         return null;
