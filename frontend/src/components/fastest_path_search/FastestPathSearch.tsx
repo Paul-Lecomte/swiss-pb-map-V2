@@ -498,7 +498,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   return (
     <div
       className={`absolute top-[92px] z-[130] w-[min(94vw,720px)] max-w-[94vw] transition-all duration-200 ${
-        pickMode
+        pickMode || selectedRoute
           ? "left-6 translate-x-0 max-w-[360px] opacity-90"
           : "left-1/2 -translate-x-1/2"
       }`}
@@ -788,10 +788,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             selectedSegmentId={selectedSegmentId}
             onSelectSegment={(segmentId) => setSelectedSegmentId(segmentId)}
             onBackToOverview={() => setSelectedSegmentId(null)}
-            onClose={() => {
-              handleCloseDetails();
-              onCloseAction();
-            }}
+            onClose={handleCloseDetails}
           />
           <div className="absolute right-0 top-0 rounded-full bg-white px-4 py-2 text-xs font-medium text-neutral-600 shadow border border-neutral-100">
             {mapStatus}
