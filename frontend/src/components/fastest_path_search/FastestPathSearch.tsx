@@ -47,6 +47,35 @@ type TripMeta = {
   stopNameById: Record<string, string>;
 };
 
+type RouteFeatureStop = {
+  stop_id: string;
+  stop_name?: string;
+  stop_lat?: number;
+  stop_lon?: number;
+};
+
+type RouteFeature = {
+  type: "Feature";
+  geometry: {
+    type: "LineString";
+    coordinates: number[][];
+  } | null;
+  properties: Record<string, unknown> & {
+    stops?: RouteFeatureStop[];
+    route_id?: string;
+    route_short_name?: string;
+    route_long_name?: string;
+    route_color?: string;
+    segment_id?: string;
+    trip_id?: string;
+  };
+};
+
+type FastestPathGeometryDetail = {
+  features: RouteFeature[];
+  selectedSegmentId: string | null;
+};
+
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -155,6 +184,102 @@ const readTripMetaFromFeature = (feature: unknown): TripMeta => {
   };
 };
 
+const nearestCoordinateIndex = (coordinates: number[][], lat: number, lon: number) => {
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  coordinates.forEach((coord, index) => {
+    const coordLon = Number(coord[0]);
+    const coordLat = Number(coord[1]);
+    if (!Number.isFinite(coordLat) || !Number.isFinite(coordLon)) return;
+    const dLat = coordLat - lat;
+    const dLon = coordLon - lon;
+    const distance = dLat * dLat + dLon * dLon;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+};
+
+const clipFeatureToStopRange = (
+  feature: RouteFeature,
+  startStopId?: string,
+  endStopId?: string
+): RouteFeature => {
+  const stops = Array.isArray(feature.properties.stops) ? feature.properties.stops : [];
+  if (!startStopId || !endStopId || !stops.length || !feature.geometry?.coordinates?.length) {
+    return feature;
+  }
+
+  const startStopIndex = stops.findIndex((stop) => stop.stop_id === startStopId);
+  const endStopIndex = stops.findIndex((stop) => stop.stop_id === endStopId);
+  if (startStopIndex < 0 || endStopIndex < 0) return feature;
+
+  const [minStopIndex, maxStopIndex] =
+    startStopIndex <= endStopIndex
+      ? [startStopIndex, endStopIndex]
+      : [endStopIndex, startStopIndex];
+  const clippedStops = stops.slice(minStopIndex, maxStopIndex + 1);
+
+  const startStop = stops[startStopIndex];
+  const endStop = stops[endStopIndex];
+
+  if (
+    !startStop ||
+    !endStop ||
+    !Number.isFinite(Number(startStop.stop_lat)) ||
+    !Number.isFinite(Number(startStop.stop_lon)) ||
+    !Number.isFinite(Number(endStop.stop_lat)) ||
+    !Number.isFinite(Number(endStop.stop_lon))
+  ) {
+    return {
+      ...feature,
+      properties: {
+        ...feature.properties,
+        stops: clippedStops,
+      },
+    };
+  }
+
+  const startCoordIndex = nearestCoordinateIndex(
+    feature.geometry.coordinates,
+    Number(startStop.stop_lat),
+    Number(startStop.stop_lon)
+  );
+  const endCoordIndex = nearestCoordinateIndex(
+    feature.geometry.coordinates,
+    Number(endStop.stop_lat),
+    Number(endStop.stop_lon)
+  );
+
+  const minCoordIndex = Math.min(startCoordIndex, endCoordIndex);
+  const maxCoordIndex = Math.max(startCoordIndex, endCoordIndex);
+  let clippedCoords = feature.geometry.coordinates.slice(minCoordIndex, maxCoordIndex + 1);
+
+  if (startCoordIndex > endCoordIndex) {
+    clippedCoords = clippedCoords.reverse();
+  }
+
+  return {
+    ...feature,
+    geometry: {
+      ...feature.geometry,
+      coordinates: clippedCoords.length ? clippedCoords : feature.geometry.coordinates,
+    },
+    properties: {
+      ...feature.properties,
+      stops: clippedStops,
+    },
+  };
+};
+
+const dispatchFastestPathGeometry = (detail: FastestPathGeometryDetail) => {
+  window.dispatchEvent(new CustomEvent("app:fastest-path-geometry", { detail }));
+};
+
 const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
   if (isRouteSummaryArray(data)) return data;
 
@@ -233,6 +358,7 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
           const stops = group.map((stopPoint) => ({
             time: formatSecondsToClock(stopPoint.arrival_time),
             name: tripMeta.stopNameById[stopPoint.stop_id] ?? stopPoint.stop_id,
+            stop_id: stopPoint.stop_id,
           }));
 
           const segmentDuration = Math.max(0, lastPoint.arrival_time - firstPoint.arrival_time);
@@ -243,6 +369,9 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
             line: tripMeta.line,
             direction: tripMeta.direction,
             travelTime: formatDuration(segmentDuration),
+            trip_id: firstPoint.trip_id,
+            start_stop_id: firstPoint.stop_id,
+            end_stop_id: lastPoint.stop_id,
             stops,
           };
 
@@ -316,6 +445,8 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   const [isSearchingEnd, setIsSearchingEnd] = useState(false);
   const [pickMode, setPickMode] = useState<PickMode>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const enrichedRoutesRef = useRef<Set<string>>(new Set());
+  const routeGeometryByRouteIdRef = useRef<Map<string, RouteFeature[]>>(new Map());
 
   useEffect(() => {
     return () => abortRef.current?.abort();
@@ -324,6 +455,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   useEffect(() => {
     return () => {
       window.dispatchEvent(new CustomEvent("app:fastest-path-pick", { detail: { mode: null } }));
+      dispatchFastestPathGeometry({ features: [], selectedSegmentId: null });
     };
   }, []);
 
@@ -421,6 +553,8 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       if (!nextRoutes.length) {
         setErrorMessage("No routes returned by the backend.");
       }
+      enrichedRoutesRef.current.clear();
+      routeGeometryByRouteIdRef.current.clear();
       setRoutes(nextRoutes);
       setSelectedRouteId(null);
       setSelectedSegmentId(null);
@@ -451,6 +585,122 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
     : selectedRoute
       ? `Route: ${selectedRoute.from.name} -> ${selectedRoute.to.name}`
       : "Search results";
+
+  useEffect(() => {
+    if (!selectedRouteId) {
+      dispatchFastestPathGeometry({ features: [], selectedSegmentId: null });
+      return;
+    }
+
+    const activeRoute = routes.find((route) => route.id === selectedRouteId);
+    if (!activeRoute) return;
+
+    const cachedFeatures = routeGeometryByRouteIdRef.current.get(selectedRouteId);
+    if (cachedFeatures && enrichedRoutesRef.current.has(selectedRouteId)) {
+      dispatchFastestPathGeometry({ features: cachedFeatures, selectedSegmentId });
+      return;
+    }
+
+    let cancelled = false;
+
+    const enrichSelectedRoute = async () => {
+      const nextSegments: RouteSummary["segments"] = [];
+      const nextFeatures: RouteFeature[] = [];
+
+      for (const segment of activeRoute.segments) {
+        if (!segment.trip_id) {
+          nextSegments.push(segment);
+          continue;
+        }
+
+        try {
+          const feature = (await getRouteGeometryByTrip(segment.trip_id, {
+            includeStops: true,
+            maxTrips: 1,
+          })) as RouteFeature;
+          const clipped = clipFeatureToStopRange(feature, segment.start_stop_id, segment.end_stop_id);
+
+          const clippedStops = Array.isArray(clipped.properties.stops) ? clipped.properties.stops : [];
+          const stopNameById = new Map<string, string>();
+          clippedStops.forEach((stop) => {
+            if (typeof stop.stop_id === "string" && typeof stop.stop_name === "string") {
+              stopNameById.set(stop.stop_id, stop.stop_name);
+            }
+          });
+
+          const routeShortName =
+            typeof clipped.properties.route_short_name === "string" &&
+            clipped.properties.route_short_name.trim()
+              ? clipped.properties.route_short_name
+              : segment.line;
+          const routeLongName =
+            typeof clipped.properties.route_long_name === "string" &&
+            clipped.properties.route_long_name.trim()
+              ? clipped.properties.route_long_name
+              : segment.direction;
+
+          nextSegments.push({
+            ...segment,
+            line: routeShortName,
+            direction: routeLongName,
+            stops: segment.stops.map((stop) => ({
+              ...stop,
+              name:
+                stop.stop_id && stopNameById.has(stop.stop_id)
+                  ? stopNameById.get(stop.stop_id) ?? stop.name
+                  : stop.name,
+            })),
+          });
+
+          nextFeatures.push({
+            ...clipped,
+            properties: {
+              ...clipped.properties,
+              route_short_name: routeShortName,
+              route_long_name: routeLongName,
+              segment_id: segment.id,
+              trip_id: segment.trip_id,
+            },
+          });
+        } catch {
+          nextSegments.push(segment);
+        }
+      }
+
+      if (cancelled) return;
+
+      const updatedRoute: RouteSummary = {
+        ...activeRoute,
+        segments: nextSegments,
+        from: nextSegments[0]?.stops[0] ?? activeRoute.from,
+        to:
+          nextSegments[nextSegments.length - 1]?.stops[
+            Math.max(0, (nextSegments[nextSegments.length - 1]?.stops.length ?? 1) - 1)
+          ] ?? activeRoute.to,
+      };
+
+      setRoutes((previous) =>
+        previous.map((route) => (route.id === selectedRouteId ? updatedRoute : route))
+      );
+
+      enrichedRoutesRef.current.add(selectedRouteId);
+      routeGeometryByRouteIdRef.current.set(selectedRouteId, nextFeatures);
+      dispatchFastestPathGeometry({ features: nextFeatures, selectedSegmentId });
+    };
+
+    enrichSelectedRoute();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routes, selectedRouteId, selectedSegmentId]);
+
+  useEffect(() => {
+    if (!selectedRouteId) return;
+    const cached = routeGeometryByRouteIdRef.current.get(selectedRouteId);
+    if (!cached) return;
+    dispatchFastestPathGeometry({ features: cached, selectedSegmentId });
+  }, [selectedRouteId, selectedSegmentId]);
 
   useEffect(() => {
     const handler = (event: Event) => {

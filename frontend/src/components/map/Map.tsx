@@ -77,6 +77,8 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
     };
 
     const [fastestPathOpen, setFastestPathOpen] = useState(false);
+    const [fastestPathRoutes, setFastestPathRoutes] = useState<any[]>([]);
+    const [fastestPathHighlightedSegmentId, setFastestPathHighlightedSegmentId] = useState<string | null>(null);
 
     // Ajout pour le highlight
     const [highlightedRouteId, setHighlightedRouteId] = useState<string | null>(null);
@@ -89,6 +91,25 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
         window.addEventListener("app:fastest-path-pick", handler as EventListener);
         return () => window.removeEventListener("app:fastest-path-pick", handler as EventListener);
     }, []);
+
+    useEffect(() => {
+        const handler = (event: Event) => {
+            const customEvent = event as CustomEvent<{ features?: any[]; selectedSegmentId?: string | null }>;
+            const features = Array.isArray(customEvent.detail?.features) ? customEvent.detail.features : [];
+            const selectedSegmentId =
+                typeof customEvent.detail?.selectedSegmentId === 'string' ? customEvent.detail.selectedSegmentId : null;
+            setFastestPathRoutes(features);
+            setFastestPathHighlightedSegmentId(selectedSegmentId);
+        };
+        window.addEventListener("app:fastest-path-geometry", handler as EventListener);
+        return () => window.removeEventListener("app:fastest-path-geometry", handler as EventListener);
+    }, []);
+
+    useEffect(() => {
+        if (fastestPathOpen) return;
+        setFastestPathRoutes([]);
+        setFastestPathHighlightedSegmentId(null);
+    }, [fastestPathOpen]);
 
     const handleRouteClick = (route: any) => {
         // Si FastestPath est ouvert, on le ferme pour éviter les overlays concurrents.
@@ -881,6 +902,22 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
                 <ZoomControl />
                 <MapRefBinder />
                 <MapEvents />
+
+                {fastestPathOpen && showAllRoutes && fastestPathRoutes.map((route: any, idx: number) => {
+                    const id = route?.properties?.segment_id || `fastest-${idx}`;
+                    return (
+                        <RouteLine
+                            key={id}
+                            route={route}
+                            color={route?.properties?.route_color || "#2563eb"}
+                            highlighted={
+                                fastestPathHighlightedSegmentId
+                                    ? route?.properties?.segment_id === fastestPathHighlightedSegmentId
+                                    : false
+                            }
+                        />
+                    );
+                })}
 
                 {/* Route lines */}
                 {renderRoutes && visibleRoutes.map((route: any) => {

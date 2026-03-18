@@ -4,6 +4,7 @@ import Image from "next/image";
 export type RouteStop = {
   time: string;
   name: string;
+  stop_id?: string;
   platform?: string;
 };
 
@@ -14,6 +15,9 @@ export type RouteSegment = {
   direction: string;
   travelTime: string;
   stops: RouteStop[];
+  trip_id?: string;
+  start_stop_id?: string;
+  end_stop_id?: string;
   transferAfter?: string;
 };
 
