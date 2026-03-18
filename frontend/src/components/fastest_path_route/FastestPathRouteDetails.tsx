@@ -46,7 +46,7 @@ const FastestPathRouteDetails = ({
     route.segments.find((segment) => segment.id === selectedSegmentId) ?? null;
 
   return (
-    <aside className="absolute left-6 top-6 z-[130] w-[360px] max-w-[94vw] rounded-[32px] bg-white p-5 shadow-2xl animate-fadeIn border border-neutral-100">
+    <aside className="absolute left-6 top-6 z-[130] w-[360px] max-w-[94vw] max-h-[calc(100vh-120px)] overflow-y-auto rounded-[32px] bg-white p-5 shadow-2xl animate-fadeIn border border-neutral-100">
       <div className="flex items-center justify-between">
         <button
           className="rounded-full border border-neutral-200 p-2 text-neutral-700 transition hover:border-neutral-300"

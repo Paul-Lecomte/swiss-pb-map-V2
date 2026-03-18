@@ -6,6 +6,7 @@ import FastestPathRouteDetails, {
 } from "../fastest_path_route/FastestPathRouteDetails";
 import { fetchFastestPath, FastestPathRequest } from "@/services/FastestPathApiCalls";
 import { searchProcessedStops } from "@/services/StopsApiCalls";
+import { getRouteGeometryByTrip } from "@/services/RouteApi";
 
 type Props = {
   onCloseAction: () => void;
@@ -17,12 +18,267 @@ const buildDepartureDateTime = (date: string, time: string) => {
   return `${date}T${normalizedTime}`;
 };
 
-const normalizeRoutes = (data: unknown): RouteSummary[] => {
-  if (Array.isArray(data)) return data as RouteSummary[];
-  if (data && typeof data === "object" && Array.isArray((data as { routes?: unknown }).routes)) {
-    return (data as { routes: RouteSummary[] }).routes;
+type RaptorStopPoint = {
+  trip_id: string;
+  stop_id: string;
+  arrival_time: number;
+};
+
+type RaptorOption = {
+  departure_time?: number;
+  transfers?: number;
+  duration_seconds?: number;
+  segments: RaptorStopPoint[];
+};
+
+type RaptorResponse = {
+  algorithm?: string;
+  transfers?: number;
+  duration_seconds?: number;
+  segments?: RaptorStopPoint[];
+  options?: RaptorOption[];
+  routes?: unknown;
+};
+
+type TripMeta = {
+  line: string;
+  direction: string;
+  mode: "train" | "bus" | "tram" | "walk" | "metro" | "ferry" | "cable";
+  stopNameById: Record<string, string>;
+};
+
+const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isRouteSummaryArray = (value: unknown): value is RouteSummary[] => {
+  if (!Array.isArray(value)) return false;
+  if (!value.length) return true;
+  const first = value[0];
+  return isObjectRecord(first) && typeof first.id === "string" && Array.isArray(first.segments);
+};
+
+const formatSecondsToClock = (seconds: number) => {
+  if (!Number.isFinite(seconds)) return "--:--";
+  const normalized = ((Math.floor(seconds) % 86400) + 86400) % 86400;
+  const hh = String(Math.floor(normalized / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((normalized % 3600) / 60)).padStart(2, "0");
+  return `${hh}:${mm}`;
+};
+
+const formatDuration = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0m";
+  const totalMinutes = Math.round(seconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (!hours) return `${minutes}m`;
+  if (!minutes) return `${hours}h`;
+  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+};
+
+const modeFromRouteType = (routeType: unknown): TripMeta["mode"] => {
+  const value = typeof routeType === "number" ? routeType : Number(routeType);
+  if (!Number.isFinite(value)) return "train";
+  if (value === 0) return "tram";
+  if (value === 1) return "metro";
+  if (value === 2) return "train";
+  if (value === 6 || value === 1300) return "cable";
+  if (value === 4 || value === 5 || value === 7 || value === 11 || value === 12)
+    return "ferry";
+  if (value === 3 || value === 200 || value === 700 || value === 800) return "bus";
+  return "train";
+};
+
+const groupConsecutiveByTrip = (points: RaptorStopPoint[]) => {
+  const groups: RaptorStopPoint[][] = [];
+  for (const point of points) {
+    const current = groups[groups.length - 1];
+    if (!current || current[0]?.trip_id !== point.trip_id) {
+      groups.push([point]);
+    } else {
+      current.push(point);
+    }
   }
-  return [];
+  return groups;
+};
+
+const deduplicateConsecutiveStops = (points: RaptorStopPoint[]) => {
+  const cleaned: RaptorStopPoint[] = [];
+  for (const point of points) {
+    const previous = cleaned[cleaned.length - 1];
+    if (previous?.stop_id === point.stop_id && previous.arrival_time === point.arrival_time) {
+      continue;
+    }
+    cleaned.push(point);
+  }
+  return cleaned;
+};
+
+const readTripMetaFromFeature = (feature: unknown): TripMeta => {
+  const fallback: TripMeta = {
+    line: "Transit",
+    direction: "",
+    mode: "train",
+    stopNameById: {},
+  };
+
+  if (!isObjectRecord(feature) || !isObjectRecord(feature.properties)) return fallback;
+
+  const properties = feature.properties;
+  const line =
+    typeof properties.route_short_name === "string" && properties.route_short_name.trim()
+      ? properties.route_short_name
+      : typeof properties.route_long_name === "string" && properties.route_long_name.trim()
+        ? properties.route_long_name
+        : fallback.line;
+  const direction =
+    typeof properties.trip_headsign === "string"
+      ? properties.trip_headsign
+      : typeof properties.route_long_name === "string"
+        ? properties.route_long_name
+        : "";
+
+  const stopNameById: Record<string, string> = {};
+  if (Array.isArray(properties.stops)) {
+    for (const stop of properties.stops) {
+      if (!isObjectRecord(stop)) continue;
+      if (typeof stop.stop_id === "string" && typeof stop.stop_name === "string") {
+        stopNameById[stop.stop_id] = stop.stop_name;
+      }
+    }
+  }
+
+  return {
+    line,
+    direction,
+    mode: modeFromRouteType(properties.route_type),
+    stopNameById,
+  };
+};
+
+const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
+  if (isRouteSummaryArray(data)) return data;
+
+  if (
+    isObjectRecord(data) &&
+    Array.isArray((data as RaptorResponse).routes) &&
+    isRouteSummaryArray((data as RaptorResponse).routes)
+  ) {
+    return (data as RaptorResponse).routes as RouteSummary[];
+  }
+
+  if (!isObjectRecord(data)) return [];
+
+  const response = data as RaptorResponse;
+  const options = Array.isArray(response.options) && response.options.length
+    ? response.options
+    : Array.isArray(response.segments)
+      ? [
+          {
+            transfers: response.transfers,
+            duration_seconds: response.duration_seconds,
+            segments: response.segments,
+          },
+        ]
+      : [];
+
+  if (!options.length) return [];
+
+  const uniqueTripIds = Array.from(
+    new Set(
+      options
+        .flatMap((option) => option.segments ?? [])
+        .map((point) => point.trip_id)
+        .filter((tripId): tripId is string => typeof tripId === "string" && !!tripId)
+    )
+  );
+
+  const tripMetaMap = new Map<string, TripMeta>();
+  await Promise.all(
+    uniqueTripIds.map(async (tripId) => {
+      try {
+        const feature = await getRouteGeometryByTrip(tripId, { includeStops: true, maxTrips: 1 });
+        tripMetaMap.set(tripId, readTripMetaFromFeature(feature));
+      } catch {
+        tripMetaMap.set(tripId, {
+          line: tripId,
+          direction: "",
+          mode: "train",
+          stopNameById: {},
+        });
+      }
+    })
+  );
+
+  return options
+    .map((option, optionIndex): RouteSummary | null => {
+      const points = Array.isArray(option.segments) ? deduplicateConsecutiveStops(option.segments) : [];
+      if (!points.length) return null;
+
+      const tripGroups = groupConsecutiveByTrip(points);
+      if (!tripGroups.length) return null;
+
+      const segments = tripGroups
+        .map((group, groupIndex): RouteSummary["segments"][number] | null => {
+          const firstPoint = group[0];
+          const lastPoint = group[group.length - 1];
+          if (!firstPoint || !lastPoint) return null;
+
+          const tripMeta = tripMetaMap.get(firstPoint.trip_id) ?? {
+            line: firstPoint.trip_id,
+            direction: "",
+            mode: "train" as const,
+            stopNameById: {},
+          };
+
+          const stops = group.map((stopPoint) => ({
+            time: formatSecondsToClock(stopPoint.arrival_time),
+            name: tripMeta.stopNameById[stopPoint.stop_id] ?? stopPoint.stop_id,
+          }));
+
+          const segmentDuration = Math.max(0, lastPoint.arrival_time - firstPoint.arrival_time);
+
+          const segment: RouteSummary["segments"][number] = {
+            id: `route-${optionIndex + 1}-segment-${groupIndex + 1}`,
+            mode: tripMeta.mode,
+            line: tripMeta.line,
+            direction: tripMeta.direction,
+            travelTime: formatDuration(segmentDuration),
+            stops,
+          };
+
+          if (groupIndex < tripGroups.length - 1) {
+            segment.transferAfter = "Transfer";
+          }
+
+          return segment;
+        })
+        .filter((segment): segment is RouteSummary["segments"][number] => segment !== null);
+
+      if (!segments.length) return null;
+
+      const firstStop = segments[0].stops[0];
+      const lastSegment = segments[segments.length - 1];
+      const lastStop = lastSegment.stops[lastSegment.stops.length - 1];
+
+      if (!firstStop || !lastStop) return null;
+
+      const firstSegmentMeta = segments[0];
+      const durationSeconds =
+        typeof option.duration_seconds === "number" && Number.isFinite(option.duration_seconds)
+          ? option.duration_seconds
+          : Math.max(0, points[points.length - 1].arrival_time - points[0].arrival_time);
+
+      return {
+        id: `route-${optionIndex + 1}`,
+        line: firstSegmentMeta.line,
+        direction: firstSegmentMeta.direction,
+        from: firstStop,
+        to: lastStop,
+        duration: formatDuration(durationSeconds),
+        segments,
+      };
+    })
+    .filter((route): route is RouteSummary => !!route);
 };
 
 const getErrorMessage = (error: unknown) => {
@@ -37,6 +293,10 @@ type StopOption = {
   stop_lon?: number;
 };
 type PickMode = "start" | "end" | null;
+type FastestPathStopPickDetail = {
+  mode?: PickMode;
+  stop?: StopOption;
+};
 
 const FastestPathSearch = ({ onCloseAction }: Props) => {
   const [startLocation, setStartLocation] = useState("Lausanne");
@@ -157,7 +417,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
 
     try {
       const data = await fetchFastestPath(payload, { signal: controller.signal });
-      const nextRoutes = normalizeRoutes(data);
+      const nextRoutes = await normalizeRoutes(data);
       if (!nextRoutes.length) {
         setErrorMessage("No routes returned by the backend.");
       }
@@ -193,9 +453,10 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       : "Search results";
 
   useEffect(() => {
-    const handler = (e: any) => {
-      const mode = e?.detail?.mode as PickMode;
-      const stop = e?.detail?.stop as StopOption | undefined;
+    const handler = (event: Event) => {
+      const customEvent = event as CustomEvent<FastestPathStopPickDetail>;
+      const mode = customEvent.detail?.mode;
+      const stop = customEvent.detail?.stop;
       if (!mode || !stop) return;
       if (mode === "start") {
         setStartStop(stop);
@@ -236,13 +497,15 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
 
   return (
     <div
-      className={`absolute left-6 top-[92px] z-[130] w-[min(94vw,720px)] max-w-[94vw] transition-all duration-200 ${
-        pickMode ? "max-w-[360px] opacity-90" : ""
+      className={`absolute top-[92px] z-[130] w-[min(94vw,720px)] max-w-[94vw] transition-all duration-200 ${
+        pickMode
+          ? "left-6 translate-x-0 max-w-[360px] opacity-90"
+          : "left-1/2 -translate-x-1/2"
       }`}
     >
       {!selectedRoute && (
         <div
-          className={`space-y-4 rounded-[28px] bg-white shadow-2xl border border-neutral-100 transition-all duration-200 ${
+          className={`space-y-4 rounded-[28px] bg-white shadow-2xl border border-neutral-100 transition-all duration-200 max-h-[calc(100vh-120px)] overflow-y-auto ${
             pickMode ? "p-3" : "p-5"
           }`}
         >
