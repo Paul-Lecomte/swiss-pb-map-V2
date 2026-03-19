@@ -2,7 +2,12 @@
 const PATH_ENDPOINT = "/api/path";
 
 export type FastestPathRequest = {
-  start_stop_id: string;
+  origin: {
+    lat: number;
+    lon: number;
+    radius_m: number;
+    max_candidates: number;
+  };
   end_stop_id: string;
   departure_time: string;
   algorithm: string;
