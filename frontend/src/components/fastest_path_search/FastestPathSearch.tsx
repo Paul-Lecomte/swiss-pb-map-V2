@@ -12,10 +12,13 @@ type Props = {
   onCloseAction: () => void;
 };
 
-const buildDepartureDateTime = (date: string, time: string) => {
+const buildDepartureTimestamp = (date: string, time: string) => {
   if (!date || !time) return null;
   const normalizedTime = time.length === 5 ? `${time}:00` : time;
-  return `${date}T${normalizedTime}`;
+  const dt = new Date(`${date}T${normalizedTime}`);
+  const millis = dt.getTime();
+  if (!Number.isFinite(millis)) return null;
+  return String(Math.floor(millis / 1000));
 };
 
 type RaptorStopPoint = {
@@ -522,7 +525,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   }, [destination]);
 
   const handleSearch = async () => {
-    const departureTimeValue = buildDepartureDateTime(departureDate, departureTime);
+      const departureTimeValue = buildDepartureTimestamp(departureDate, departureTime);
     if (!departureTimeValue) {
       setErrorMessage("Please provide a valid date and time.");
       return;
@@ -533,12 +536,22 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       return;
     }
 
+    if (!Number.isFinite(startStop.stop_lat) || !Number.isFinite(startStop.stop_lon)) {
+      setErrorMessage("Start stop coordinates are missing. Please pick a stop from suggestions or map.");
+      return;
+    }
+
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
     const payload: FastestPathRequest = {
-      start_stop_id: startStop.stop_id,
+      origin: {
+        lat: Number(startStop.stop_lat),
+        lon: Number(startStop.stop_lon),
+        radius_m: 1000,
+        max_candidates: 12,
+      },
       end_stop_id: endStop.stop_id,
       departure_time: departureTimeValue,
       algorithm: "raptor",
