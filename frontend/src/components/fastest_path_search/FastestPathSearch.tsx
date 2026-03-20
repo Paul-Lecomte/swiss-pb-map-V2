@@ -21,6 +21,20 @@ const buildDepartureTimestamp = (date: string, time: string) => {
   return String(Math.floor(millis / 1000));
 };
 
+const getCurrentDateAndTime = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+
+  return {
+    date: `${year}-${month}-${day}`,
+    time: `${hours}:${minutes}`,
+  };
+};
+
 type RaptorStopPoint = {
   trip_id: string;
   stop_id: string;
@@ -431,10 +445,10 @@ type FastestPathStopPickDetail = {
 };
 
 const FastestPathSearch = ({ onCloseAction }: Props) => {
-  const [startLocation, setStartLocation] = useState("Lausanne");
-  const [destination, setDestination] = useState("Geneve");
-  const [departureDate, setDepartureDate] = useState("2026-02-03");
-  const [departureTime, setDepartureTime] = useState("10:55");
+  const [startLocation, setStartLocation] = useState("");
+  const [destination, setDestination] = useState("");
+  const [departureDate, setDepartureDate] = useState(() => getCurrentDateAndTime().date);
+  const [departureTime, setDepartureTime] = useState(() => getCurrentDateAndTime().time);
   const [routes, setRoutes] = useState<RouteSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -541,6 +555,11 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       return;
     }
 
+    if (!Number.isFinite(endStop.stop_lat) || !Number.isFinite(endStop.stop_lon)) {
+      setErrorMessage("Destination stop coordinates are missing. Please pick a stop from suggestions or map.");
+      return;
+    }
+
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -549,10 +568,15 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       origin: {
         lat: Number(startStop.stop_lat),
         lon: Number(startStop.stop_lon),
-        radius_m: 1000,
+        radius_m: 500,
         max_candidates: 12,
       },
-      end_stop_id: endStop.stop_id,
+      destination: {
+        lat: Number(endStop.stop_lat),
+        lon: Number(endStop.stop_lon),
+        radius_m: 500,
+        max_candidates: 12,
+      },
       departure_time: departureTimeValue,
       algorithm: "raptor",
     };

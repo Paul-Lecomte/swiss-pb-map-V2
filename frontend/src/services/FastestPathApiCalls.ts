@@ -8,7 +8,12 @@ export type FastestPathRequest = {
     radius_m: number;
     max_candidates: number;
   };
-  end_stop_id: string;
+  destination: {
+    lat: number;
+    lon: number;
+    radius_m: number;
+    max_candidates: number;
+  };
   departure_time: string;
   algorithm: string;
 };
