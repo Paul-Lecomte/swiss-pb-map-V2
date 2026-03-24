@@ -128,6 +128,63 @@ const formatTransferText = (segment: RouteSummary["segments"][number]) => {
   return `${segment.line} ${segment.travelTime}`;
 };
 
+const looksLikeStopId = (value?: string) => {
+  if (!value) return false;
+  return /[:]/.test(value) || /^\d+$/.test(value);
+};
+
+const ensureReadableStopName = (
+  stop: RouteSummary["from"] | RouteSummary["to"],
+  fallbackName?: string
+) => {
+  if (!fallbackName?.trim()) return stop;
+  if (stop.name && !looksLikeStopId(stop.name)) return stop;
+  return {
+    ...stop,
+    name: fallbackName,
+  };
+};
+
+const applyEndpointFallbackNames = (
+  routes: RouteSummary[],
+  startStopName?: string,
+  endStopName?: string
+) => {
+  return routes.map((route) => ({
+    ...route,
+    from: ensureReadableStopName(route.from, startStopName),
+    to: ensureReadableStopName(route.to, endStopName),
+    segments: route.segments.map((segment, index, allSegments) => {
+      if (!segment.stops.length) return segment;
+
+      const nextStops = [...segment.stops];
+      if (index === 0 && looksLikeStopId(nextStops[0]?.name) && startStopName?.trim()) {
+        nextStops[0] = {
+          ...nextStops[0],
+          name: startStopName,
+        };
+      }
+
+      if (
+        index === allSegments.length - 1 &&
+        looksLikeStopId(nextStops[nextStops.length - 1]?.name) &&
+        endStopName?.trim()
+      ) {
+        const lastIndex = nextStops.length - 1;
+        nextStops[lastIndex] = {
+          ...nextStops[lastIndex],
+          name: endStopName,
+        };
+      }
+
+      return {
+        ...segment,
+        stops: nextStops,
+      };
+    }),
+  }));
+};
+
 const modeFromRouteType = (routeType: unknown): TripMeta["mode"] => {
   const value = typeof routeType === "number" ? routeType : Number(routeType);
   if (!Number.isFinite(value)) return "train";
@@ -649,7 +706,12 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
 
     try {
       const data = await fetchFastestPath(payload, { signal: controller.signal });
-      const nextRoutes = await normalizeRoutes(data);
+      const normalizedRoutes = await normalizeRoutes(data);
+      const nextRoutes = applyEndpointFallbackNames(
+        normalizedRoutes,
+        startStop.stop_name,
+        endStop.stop_name
+      );
       if (!nextRoutes.length) {
         setErrorMessage("No routes returned by the backend.");
       }
