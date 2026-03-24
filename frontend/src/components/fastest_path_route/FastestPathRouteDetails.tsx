@@ -77,31 +77,31 @@ const FastestPathRouteDetails = ({
           {route.segments.map((segment, index) => {
             const firstStop = segment.stops[0];
             const lastStop = segment.stops[segment.stops.length - 1];
-            const badgeColors: Record<string, string> = {
-              train: "border-blue-200 text-blue-600",
-              bus: "border-emerald-200 text-emerald-600",
-              tram: "border-purple-200 text-purple-600",
-              metro: "border-pink-200 text-pink-600",
-              ferry: "border-cyan-200 text-cyan-600",
-              cable: "border-yellow-200 text-yellow-600",
-              walk: "border-neutral-200 text-neutral-600",
-            };
-
-            const badgeClass = badgeColors[segment.mode] ?? badgeColors.train;
+            const badgeClass = getModeBadgeClass(segment.mode);
+            const segmentLabel =
+              segment.mode === "walk"
+                ? segment.line.toLowerCase() === "walk"
+                  ? `Walk ${segment.travelTime}`
+                  : `${segment.line} ${segment.travelTime}`
+                : segment.line;
+            const segmentCardClass =
+              segment.mode === "walk"
+                ? "border-dashed border-neutral-200 bg-neutral-50"
+                : "border-neutral-100";
 
             return (
               <button
                 key={segment.id}
                 type="button"
                 onClick={() => onSelectSegment(segment.id)}
-                className="w-full rounded-2xl border border-neutral-100 px-3 py-3 text-left transition hover:shadow-sm hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-100 flex items-center gap-3"
+                className={`w-full rounded-2xl border px-3 py-3 text-left transition hover:shadow-sm hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-100 flex items-center gap-3 ${segmentCardClass}`}
                 aria-label={`Open segment ${index + 1} details`}
               >
                 <ModeIcon mode={segment.mode} />
                 <div className="flex-1">
                   <div className="flex items-center gap-2 text-sm text-neutral-700">
                     <span className={`rounded-full border px-2 py-0.5 font-semibold ${badgeClass}`}>
-                      {segment.line}
+                      {segmentLabel}
                     </span>
                     <span className="text-xs text-neutral-500">{segment.direction}</span>
                   </div>
@@ -126,8 +126,8 @@ const FastestPathRouteDetails = ({
 
           <div className="flex items-center gap-3">
             <ModeIcon mode={selectedSegment.mode} />
-            <span className="rounded-full border border-red-400 px-2 py-0.5 text-xs font-semibold text-red-500">
-              {selectedSegment.line}
+            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${getModeBadgeClass(selectedSegment.mode)}`}>
+              {selectedSegment.mode === "walk" ? `${selectedSegment.line} ${selectedSegment.travelTime}` : selectedSegment.line}
             </span>
             <span className="text-xs text-neutral-500">{selectedSegment.direction}</span>
             <span className="ml-auto text-xs text-neutral-400">{selectedSegment.travelTime}</span>
@@ -278,6 +278,20 @@ const ModeIcon = ({ mode }: { mode: RouteSegment["mode"] }) => {
   }
 
   return <TrainIcon />;
+};
+
+const getModeBadgeClass = (mode: RouteSegment["mode"]) => {
+  const colors: Record<RouteSegment["mode"], string> = {
+    train: "border-blue-200 text-blue-600",
+    bus: "border-emerald-200 text-emerald-600",
+    tram: "border-purple-200 text-purple-600",
+    metro: "border-pink-200 text-pink-600",
+    ferry: "border-cyan-200 text-cyan-600",
+    cable: "border-yellow-200 text-yellow-700",
+    walk: "border-neutral-200 text-neutral-600",
+  };
+
+  return colors[mode] ?? colors.train;
 };
 
 const CloseIcon = () => (
