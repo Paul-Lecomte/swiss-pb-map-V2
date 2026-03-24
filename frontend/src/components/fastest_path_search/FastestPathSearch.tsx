@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import FastestPathRouteDetails, {
   RouteSummary,
 } from "../fastest_path_route/FastestPathRouteDetails";
@@ -119,6 +120,12 @@ const formatDuration = (seconds: number) => {
   if (!hours) return `${minutes}m`;
   if (!minutes) return `${hours}h`;
   return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+};
+
+const formatTransferText = (segment: RouteSummary["segments"][number]) => {
+  if (segment.mode !== "walk") return segment.line;
+  if (segment.line.toLowerCase() === "walk") return `Walk ${segment.travelTime}`;
+  return `${segment.line} ${segment.travelTime}`;
 };
 
 const modeFromRouteType = (routeType: unknown): TripMeta["mode"] => {
@@ -359,8 +366,8 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
       const tripGroups = groupConsecutiveByTrip(points);
       if (!tripGroups.length) return null;
 
-      const segments = tripGroups
-        .map((group, groupIndex): RouteSummary["segments"][number] | null => {
+      const groupedSegments = tripGroups
+        .map((group, groupIndex) => {
           const firstPoint = group[0];
           const lastPoint = group[group.length - 1];
           if (!firstPoint || !lastPoint) return null;
@@ -392,13 +399,69 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
             stops,
           };
 
-          if (groupIndex < tripGroups.length - 1) {
-            segment.transferAfter = "Transfer";
-          }
-
-          return segment;
+          return {
+            segment,
+            firstPoint,
+            lastPoint,
+          };
         })
-        .filter((segment): segment is RouteSummary["segments"][number] => segment !== null);
+        .filter(
+          (
+            entry
+          ): entry is {
+            segment: RouteSummary["segments"][number];
+            firstPoint: RaptorStopPoint;
+            lastPoint: RaptorStopPoint;
+          } => entry !== null
+        );
+
+      const segments: RouteSummary["segments"] = [];
+
+      groupedSegments.forEach((entry, index) => {
+        segments.push(entry.segment);
+
+        if (index >= groupedSegments.length - 1) return;
+
+        const nextEntry = groupedSegments[index + 1];
+        const fromStop = entry.segment.stops[entry.segment.stops.length - 1];
+        const toStop = nextEntry.segment.stops[0];
+        if (!fromStop || !toStop) return;
+
+        const transferSeconds = Math.max(0, nextEntry.firstPoint.arrival_time - entry.lastPoint.arrival_time);
+        const sameStop =
+          !!entry.lastPoint.stop_id &&
+          !!nextEntry.firstPoint.stop_id &&
+          entry.lastPoint.stop_id === nextEntry.firstPoint.stop_id;
+
+        if (transferSeconds <= 0 && sameStop) return;
+
+        const isWalkingTransfer = !sameStop;
+        const transferSegment: RouteSummary["segments"][number] = {
+          id: `route-${optionIndex + 1}-segment-transfer-${index + 1}`,
+          mode: "walk",
+          line: isWalkingTransfer ? "Walk" : "Transfer",
+          direction: isWalkingTransfer
+            ? `${fromStop.name} → ${toStop.name}`
+            : `Change at ${fromStop.name}`,
+          travelTime: formatDuration(transferSeconds),
+          start_stop_id: entry.lastPoint.stop_id,
+          end_stop_id: nextEntry.firstPoint.stop_id,
+          stops: [
+            {
+              time: formatSecondsToClock(entry.lastPoint.arrival_time),
+              name: fromStop.name,
+              stop_id: entry.lastPoint.stop_id,
+            },
+            {
+              time: formatSecondsToClock(nextEntry.firstPoint.arrival_time),
+              name: toStop.name,
+              stop_id: nextEntry.firstPoint.stop_id,
+            },
+          ],
+        };
+
+        segments.push(transferSegment);
+      });
 
       if (!segments.length) return null;
 
@@ -408,7 +471,7 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
 
       if (!firstStop || !lastStop) return null;
 
-      const firstSegmentMeta = segments[0];
+      const firstSegmentMeta = segments.find((segment) => segment.mode !== "walk") ?? segments[0];
       const durationSeconds =
         typeof option.duration_seconds === "number" && Number.isFinite(option.duration_seconds)
           ? option.duration_seconds
@@ -568,14 +631,14 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       origin: {
         lat: Number(startStop.stop_lat),
         lon: Number(startStop.stop_lon),
-        radius_m: 500,
-        max_candidates: 12,
+        radius_m: 150,
+        max_candidates: 15,
       },
       destination: {
         lat: Number(endStop.stop_lat),
         lon: Number(endStop.stop_lon),
-        radius_m: 500,
-        max_candidates: 12,
+        radius_m: 50,
+        max_candidates: 15,
       },
       departure_time: departureTimeValue,
       algorithm: "raptor",
@@ -988,7 +1051,9 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
               </div>
             )}
             {routes.map((route) => {
-              const mode = route.segments[0]?.mode || "train";
+              const firstMainSegment =
+                route.segments.find((segment) => segment.mode !== "walk") ?? route.segments[0];
+              const mode = firstMainSegment?.mode || "train";
               const badgeColors: Record<string, string> = {
                 train: "border-blue-200 text-blue-600",
                 bus: "border-emerald-200 text-emerald-600",
@@ -1000,6 +1065,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
               };
 
               const badgeClass = badgeColors[mode] ?? badgeColors.train;
+              const transferCount = route.segments.filter((segment) => segment.mode !== "walk").length - 1;
 
               return (
                 <button
@@ -1021,9 +1087,9 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                       <div>
                         <div className="flex items-center gap-2 text-xs text-neutral-500">
                           <span className={`rounded-full border px-2 py-0.5 font-semibold ${badgeClass}`}>
-                            {route.line}
+                            {firstMainSegment?.line ?? route.line}
                           </span>
-                          <span>{route.direction}</span>
+                          <span>{firstMainSegment?.direction || route.direction}</span>
                         </div>
                       </div>
                     </div>
@@ -1059,7 +1125,10 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                     </div>
                   </div>
                   <RouteTransfers segments={route.segments} />
-                  <div className="mt-4 h-px w-full bg-neutral-200" />
+                  <div className="mt-3 flex items-center justify-between text-xs text-neutral-500">
+                    <span>{Math.max(0, transferCount)} transfer{Math.max(0, transferCount) > 1 ? "s" : ""}</span>
+                    <span>{route.duration}</span>
+                  </div>
                 </button>
               );
             })}
@@ -1149,9 +1218,11 @@ const RouteMainIcon = ({ mode }: { mode: string }) => {
 
   return (
     <div className={`flex h-10 w-10 items-center justify-center rounded-full border-2 bg-white ${border}`}>
-      <img
+      <Image
         src={src}
         alt={alt}
+        width={28}
+        height={28}
         className="h-7 w-7 object-contain"
         draggable={false}
       />
@@ -1164,32 +1235,38 @@ const RouteTransfers = ({
 }: {
   segments: RouteSummary["segments"];
 }) => {
-  const transferCount = Math.max(0, segments.length - 1);
+  const compactSegments = segments.filter((segment) => {
+    if (segment.mode !== "walk") return true;
+    const minutes = Number.parseInt(segment.travelTime, 10);
+    return Number.isFinite(minutes) || segment.travelTime !== "0m";
+  });
 
   return (
     <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
-      {segments.map((segment) => (
-        <span
-          key={segment.id}
-          className={`flex items-center gap-2 rounded-full border px-2 py-0.5 ${
-            segment.mode === "bus"
-              ? "border-emerald-200 text-emerald-600"
-              : segment.mode === "tram"
-                ? "border-purple-200 text-purple-600"
-                : segment.mode === "walk"
-                  ? "border-neutral-200 text-neutral-500"
-                  : "border-blue-200 text-blue-600"
-          }`}
-        >
-          <span className="h-2 w-2 rounded-full bg-current" />
-          <span>{segment.line}</span>
-        </span>
+      {compactSegments.map((segment, index) => (
+        <div key={segment.id} className="flex items-center gap-2">
+          {index > 0 && <span className="text-neutral-300">•</span>}
+          <span
+            className={`rounded-full border px-2 py-0.5 ${
+              segment.mode === "bus"
+                ? "border-emerald-200 text-emerald-600"
+                : segment.mode === "tram"
+                  ? "border-purple-200 text-purple-600"
+                  : segment.mode === "metro"
+                    ? "border-pink-200 text-pink-600"
+                    : segment.mode === "ferry"
+                      ? "border-cyan-200 text-cyan-600"
+                      : segment.mode === "cable"
+                        ? "border-yellow-200 text-yellow-700"
+                        : segment.mode === "walk"
+                          ? "border-neutral-200 text-neutral-600"
+                          : "border-blue-200 text-blue-600"
+            }`}
+          >
+            {formatTransferText(segment)}
+          </span>
+        </div>
       ))}
-      {transferCount > 0 && (
-        <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-neutral-500">
-          {transferCount} transfer{transferCount > 1 ? "s" : ""}
-        </span>
-      )}
     </div>
   );
 };
