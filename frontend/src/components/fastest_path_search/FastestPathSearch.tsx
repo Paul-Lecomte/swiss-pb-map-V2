@@ -185,6 +185,126 @@ const applyEndpointFallbackNames = (
   }));
 };
 
+const resolveStopNameFromSearch = (result: unknown, stopId: string) => {
+  if (!Array.isArray(result)) return undefined;
+
+  const exactMatch = result.find(
+    (item) =>
+      isObjectRecord(item) &&
+      typeof item.stop_id === "string" &&
+      item.stop_id === stopId &&
+      typeof item.stop_name === "string" &&
+      !!item.stop_name.trim()
+  );
+  if (isObjectRecord(exactMatch) && typeof exactMatch.stop_name === "string") {
+    return exactMatch.stop_name;
+  }
+
+  const firstNamed = result.find(
+    (item) =>
+      isObjectRecord(item) && typeof item.stop_name === "string" && !!item.stop_name.trim()
+  );
+  if (isObjectRecord(firstNamed) && typeof firstNamed.stop_name === "string") {
+    return firstNamed.stop_name;
+  }
+
+  return undefined;
+};
+
+const hydrateRouteStopNames = async (
+  route: RouteSummary,
+  startStopName?: string,
+  endStopName?: string
+): Promise<RouteSummary> => {
+  const routeWithEndpoints = applyEndpointFallbackNames([route], startStopName, endStopName)[0];
+  if (!routeWithEndpoints) return route;
+
+  const knownStopNameById = new Map<string, string>();
+  routeWithEndpoints.segments.forEach((segment) => {
+    segment.stops.forEach((stop) => {
+      if (!stop.stop_id || !stop.name || looksLikeStopId(stop.name)) return;
+      knownStopNameById.set(stop.stop_id, stop.name);
+    });
+  });
+
+  const unresolvedStopIds = Array.from(
+    new Set(
+      routeWithEndpoints.segments
+        .flatMap((segment) => segment.stops)
+        .map((stop) => stop.stop_id)
+        .filter(
+          (stopId): stopId is string =>
+            typeof stopId === "string" &&
+            !!stopId &&
+            !knownStopNameById.has(stopId)
+        )
+    )
+  );
+
+  if (unresolvedStopIds.length) {
+    await Promise.all(
+      unresolvedStopIds.map(async (stopId) => {
+        try {
+          const searchResult = await searchProcessedStops(stopId);
+          const resolvedName = resolveStopNameFromSearch(searchResult, stopId);
+          if (resolvedName) {
+            knownStopNameById.set(stopId, resolvedName);
+          }
+        } catch {
+          // Ignore stop lookup failures and keep existing values.
+        }
+      })
+    );
+  }
+
+  const nextSegments = routeWithEndpoints.segments.map((segment) => {
+    const nextStops = segment.stops.map((stop) => {
+      if (!stop.stop_id || !knownStopNameById.has(stop.stop_id)) return stop;
+      const resolvedName = knownStopNameById.get(stop.stop_id);
+      if (!resolvedName) return stop;
+      if (stop.name && !looksLikeStopId(stop.name)) return stop;
+      return {
+        ...stop,
+        name: resolvedName,
+      };
+    });
+
+    if (segment.mode !== "walk") {
+      return {
+        ...segment,
+        stops: nextStops,
+      };
+    }
+
+    const firstStop = nextStops[0];
+    const lastStop = nextStops[nextStops.length - 1];
+    const nextDirection =
+      firstStop && lastStop
+        ? firstStop.stop_id && lastStop.stop_id && firstStop.stop_id === lastStop.stop_id
+          ? `Change at ${firstStop.name}`
+          : `${firstStop.name} → ${lastStop.name}`
+        : segment.direction;
+
+    return {
+      ...segment,
+      direction: nextDirection,
+      stops: nextStops,
+    };
+  });
+
+  const firstStop = nextSegments[0]?.stops[0] ?? routeWithEndpoints.from;
+  const lastSegment = nextSegments[nextSegments.length - 1];
+  const lastStop =
+    lastSegment?.stops[Math.max(0, (lastSegment.stops.length ?? 1) - 1)] ?? routeWithEndpoints.to;
+
+  return {
+    ...routeWithEndpoints,
+    segments: nextSegments,
+    from: ensureReadableStopName(firstStop, startStopName),
+    to: ensureReadableStopName(lastStop, endStopName),
+  };
+};
+
 const modeFromRouteType = (routeType: unknown): TripMeta["mode"] => {
   const value = typeof routeType === "number" ? routeType : Number(routeType);
   if (!Number.isFinite(value)) return "train";
@@ -841,8 +961,14 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
           ] ?? activeRoute.to,
       };
 
+      const hydratedRoute = await hydrateRouteStopNames(
+        updatedRoute,
+        startStop?.stop_name,
+        endStop?.stop_name
+      );
+
       setRoutes((previous) =>
-        previous.map((route) => (route.id === selectedRouteId ? updatedRoute : route))
+        previous.map((route) => (route.id === selectedRouteId ? hydratedRoute : route))
       );
 
       enrichedRoutesRef.current.add(selectedRouteId);
@@ -855,7 +981,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
     return () => {
       cancelled = true;
     };
-  }, [routes, selectedRouteId, selectedSegmentId]);
+  }, [routes, selectedRouteId, selectedSegmentId, startStop?.stop_name, endStop?.stop_name]);
 
   useEffect(() => {
     if (!selectedRouteId) return;
