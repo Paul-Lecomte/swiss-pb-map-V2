@@ -94,6 +94,11 @@ type FastestPathGeometryDetail = {
   selectedSegmentId: string | null;
 };
 
+type StopCoordinate = {
+  lat: number;
+  lon: number;
+};
+
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -405,6 +410,80 @@ const nearestCoordinateIndex = (coordinates: number[][], lat: number, lon: numbe
   return bestIndex;
 };
 
+const normalizeStopIdToken = (value?: string) => {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const baseToken = trimmed.split(":")[0] ?? trimmed;
+  return baseToken.trim().toLowerCase();
+};
+
+const stopIdsMatch = (left?: string, right?: string) => {
+  if (!left || !right) return false;
+  if (left === right) return true;
+
+  const leftToken = normalizeStopIdToken(left);
+  const rightToken = normalizeStopIdToken(right);
+  if (leftToken && rightToken && leftToken === rightToken) return true;
+
+  return left.startsWith(`${right}:`) || right.startsWith(`${left}:`);
+};
+
+const findStopIndexById = (stops: RouteFeatureStop[], stopId?: string) => {
+  if (!stopId) return -1;
+
+  const exactIndex = stops.findIndex((stop) => stop.stop_id === stopId);
+  if (exactIndex >= 0) return exactIndex;
+
+  return stops.findIndex((stop) => stopIdsMatch(stop.stop_id, stopId));
+};
+
+const getFastestPathSegmentColor = (mode: RouteSummary["segments"][number]["mode"]) => {
+  const colors: Record<RouteSummary["segments"][number]["mode"], string> = {
+    train: "#2563eb",
+    bus: "#2563eb",
+    tram: "#7c3aed",
+    metro: "#db2777",
+    ferry: "#0891b2",
+    cable: "#ca8a04",
+    walk: "#6b7280",
+  };
+
+  return colors[mode] ?? colors.train;
+};
+
+const readStopCoordinateFromFeatureStop = (stop?: RouteFeatureStop | null): StopCoordinate | null => {
+  if (!stop) return null;
+  const lat = Number(stop.stop_lat);
+  const lon = Number(stop.stop_lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon };
+};
+
+const resolveStopCoordinateFromMap = (
+  stopId: string | undefined,
+  coordinatesByStopId: Map<string, StopCoordinate>
+) => {
+  if (!stopId) return null;
+
+  const exact = coordinatesByStopId.get(stopId);
+  if (exact) return exact;
+
+  const normalized = normalizeStopIdToken(stopId);
+  if (!normalized) return null;
+
+  const normalizedKey = `norm:${normalized}`;
+  const normalizedExact = coordinatesByStopId.get(normalizedKey);
+  if (normalizedExact) return normalizedExact;
+
+  for (const [key, value] of coordinatesByStopId.entries()) {
+    if (key.startsWith("norm:")) continue;
+    if (stopIdsMatch(key, stopId)) return value;
+  }
+
+  return null;
+};
+
 const clipFeatureToStopRange = (
   feature: RouteFeature,
   startStopId?: string,
@@ -415,8 +494,8 @@ const clipFeatureToStopRange = (
     return feature;
   }
 
-  const startStopIndex = stops.findIndex((stop) => stop.stop_id === startStopId);
-  const endStopIndex = stops.findIndex((stop) => stop.stop_id === endStopId);
+  const startStopIndex = findStopIndexById(stops, startStopId);
+  const endStopIndex = findStopIndexById(stops, endStopId);
   if (startStopIndex < 0 || endStopIndex < 0) return feature;
 
   const [minStopIndex, maxStopIndex] =
@@ -473,6 +552,45 @@ const clipFeatureToStopRange = (
     properties: {
       ...feature.properties,
       stops: clippedStops,
+    },
+  };
+};
+
+const clipFeatureToCoordinateRange = (
+  feature: RouteFeature,
+  startCoord?: StopCoordinate | null,
+  endCoord?: StopCoordinate | null
+): RouteFeature => {
+  if (!feature.geometry?.coordinates?.length || !startCoord || !endCoord) {
+    return feature;
+  }
+
+  const startCoordIndex = nearestCoordinateIndex(
+    feature.geometry.coordinates,
+    startCoord.lat,
+    startCoord.lon
+  );
+  const endCoordIndex = nearestCoordinateIndex(
+    feature.geometry.coordinates,
+    endCoord.lat,
+    endCoord.lon
+  );
+
+  const minCoordIndex = Math.min(startCoordIndex, endCoordIndex);
+  const maxCoordIndex = Math.max(startCoordIndex, endCoordIndex);
+  let clippedCoords = feature.geometry.coordinates.slice(minCoordIndex, maxCoordIndex + 1);
+
+  if (startCoordIndex > endCoordIndex) {
+    clippedCoords = clippedCoords.reverse();
+  }
+
+  if (!clippedCoords.length) return feature;
+
+  return {
+    ...feature,
+    geometry: {
+      ...feature.geometry,
+      coordinates: clippedCoords,
     },
   };
 };
@@ -887,7 +1005,9 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
 
     const enrichSelectedRoute = async () => {
       const nextSegments: RouteSummary["segments"] = [];
-      const nextFeatures: RouteFeature[] = [];
+      const rawFeatureBySegmentId = new Map<string, RouteFeature>();
+      const transitFeatureBySegmentId = new Map<string, RouteFeature>();
+      const coordinatesByStopId = new Map<string, StopCoordinate>();
 
       for (const segment of activeRoute.segments) {
         if (!segment.trip_id) {
@@ -900,6 +1020,20 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             includeStops: true,
             maxTrips: 1,
           })) as RouteFeature;
+          rawFeatureBySegmentId.set(segment.id, feature);
+
+          const featureStops = Array.isArray(feature.properties.stops) ? feature.properties.stops : [];
+          featureStops.forEach((stop) => {
+            if (typeof stop.stop_id !== "string") return;
+            const coordinate = readStopCoordinateFromFeatureStop(stop);
+            if (!coordinate) return;
+            coordinatesByStopId.set(stop.stop_id, coordinate);
+            const normalizedToken = normalizeStopIdToken(stop.stop_id);
+            if (normalizedToken) {
+              coordinatesByStopId.set(`norm:${normalizedToken}`, coordinate);
+            }
+          });
+
           const clipped = clipFeatureToStopRange(feature, segment.start_stop_id, segment.end_stop_id);
 
           const clippedStops = Array.isArray(clipped.properties.stops) ? clipped.properties.stops : [];
@@ -907,6 +1041,16 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
           clippedStops.forEach((stop) => {
             if (typeof stop.stop_id === "string" && typeof stop.stop_name === "string") {
               stopNameById.set(stop.stop_id, stop.stop_name);
+            }
+
+            if (typeof stop.stop_id === "string") {
+              const coordinate = readStopCoordinateFromFeatureStop(stop);
+              if (!coordinate) return;
+              coordinatesByStopId.set(stop.stop_id, coordinate);
+              const normalizedToken = normalizeStopIdToken(stop.stop_id);
+              if (normalizedToken) {
+                coordinatesByStopId.set(`norm:${normalizedToken}`, coordinate);
+              }
             }
           });
 
@@ -934,19 +1078,81 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             })),
           });
 
-          nextFeatures.push({
+          transitFeatureBySegmentId.set(segment.id, {
             ...clipped,
             properties: {
               ...clipped.properties,
               route_short_name: routeShortName,
               route_long_name: routeLongName,
               segment_id: segment.id,
+              segment_mode: segment.mode,
               trip_id: segment.trip_id,
+              fastest_path_color: getFastestPathSegmentColor(segment.mode),
             },
           });
         } catch {
           nextSegments.push(segment);
         }
+      }
+
+      for (const segment of activeRoute.segments) {
+        if (!segment.trip_id) continue;
+
+        const rawFeature = rawFeatureBySegmentId.get(segment.id);
+        const existingFeature = transitFeatureBySegmentId.get(segment.id);
+        if (!rawFeature || !existingFeature) continue;
+
+        const startCoord = resolveStopCoordinateFromMap(segment.start_stop_id, coordinatesByStopId);
+        const endCoord = resolveStopCoordinateFromMap(segment.end_stop_id, coordinatesByStopId);
+        if (!startCoord || !endCoord) continue;
+
+        const coordClipped = clipFeatureToCoordinateRange(rawFeature, startCoord, endCoord);
+        const robustClipped = clipFeatureToStopRange(
+          coordClipped,
+          segment.start_stop_id,
+          segment.end_stop_id
+        );
+
+        transitFeatureBySegmentId.set(segment.id, {
+          ...robustClipped,
+          properties: {
+            ...existingFeature.properties,
+          },
+        });
+      }
+
+      const nextFeatures: RouteFeature[] = [];
+      for (const segment of activeRoute.segments) {
+        const transitFeature = transitFeatureBySegmentId.get(segment.id);
+        if (transitFeature) {
+          nextFeatures.push(transitFeature);
+          continue;
+        }
+
+        if (segment.mode !== "walk") continue;
+
+        const startCoord = resolveStopCoordinateFromMap(segment.start_stop_id, coordinatesByStopId);
+        const endCoord = resolveStopCoordinateFromMap(segment.end_stop_id, coordinatesByStopId);
+        if (!startCoord || !endCoord) continue;
+
+        nextFeatures.push({
+          type: "Feature",
+          geometry: {
+            type: "LineString",
+            coordinates: [
+              [startCoord.lon, startCoord.lat],
+              [endCoord.lon, endCoord.lat],
+            ],
+          },
+          properties: {
+            route_short_name: segment.line,
+            route_long_name: segment.direction,
+            segment_id: segment.id,
+            segment_mode: segment.mode,
+            fastest_path_color: getFastestPathSegmentColor(segment.mode),
+            fastest_path_dash: "8 8",
+          },
+        });
       }
 
       if (cancelled) return;
