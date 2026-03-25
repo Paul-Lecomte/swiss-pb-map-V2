@@ -905,16 +905,39 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
 
                 {fastestPathOpen && showAllRoutes && fastestPathRoutes.map((route: any, idx: number) => {
                     const id = route?.properties?.segment_id || `fastest-${idx}`;
+                    const segmentMode = route?.properties?.segment_mode;
+                    const isWalkSegment = segmentMode === "walk";
+                    const isHighlightedSegment =
+                        fastestPathHighlightedSegmentId
+                            ? route?.properties?.segment_id === fastestPathHighlightedSegmentId
+                            : false;
                     return (
                         <RouteLine
                             key={id}
                             route={route}
-                            color={route?.properties?.route_color || "#2563eb"}
-                            highlighted={
-                                fastestPathHighlightedSegmentId
-                                    ? route?.properties?.segment_id === fastestPathHighlightedSegmentId
-                                    : false
+                            color={
+                                route?.properties?.fastest_path_color ||
+                                route?.properties?.route_color ||
+                                "#2563eb"
                             }
+                            weight={isWalkSegment ? 3 : isHighlightedSegment ? 6 : 5}
+                            opacity={
+                                fastestPathHighlightedSegmentId
+                                    ? isHighlightedSegment
+                                        ? 1
+                                        : 0.45
+                                    : isWalkSegment
+                                        ? 0.85
+                                        : 0.95
+                            }
+                            dashArray={
+                                typeof route?.properties?.fastest_path_dash === "string"
+                                    ? route.properties.fastest_path_dash
+                                    : isWalkSegment
+                                        ? "8 8"
+                                        : undefined
+                            }
+                            highlighted={isHighlightedSegment}
                         />
                     );
                 })}

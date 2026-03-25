@@ -6,9 +6,20 @@ interface RouteLineProps {
     color?: string;
     onClick?: () => void;
     highlighted?: boolean;
+    weight?: number;
+    opacity?: number;
+    dashArray?: string;
 }
 
-const RouteLine: React.FC<RouteLineProps> = ({ route, color = "#0074D9", onClick, highlighted }) => {
+const RouteLine: React.FC<RouteLineProps> = ({
+    route,
+    color = "#0074D9",
+    onClick,
+    highlighted,
+    weight = 1.5,
+    opacity = 0.8,
+    dashArray,
+}) => {
     if (!route?.geometry?.coordinates || !Array.isArray(route.geometry.coordinates) || route.geometry.coordinates.length === 0) {
         return null;
     }
@@ -32,9 +43,10 @@ const RouteLine: React.FC<RouteLineProps> = ({ route, color = "#0074D9", onClick
                 positions={positions}
                 pathOptions={{
                     color: routeColor,
-                    weight: 1.5,
-                    opacity: 0.8,
+                    weight,
+                    opacity,
                     lineCap: "round",
+                    dashArray,
                 }}
                 eventHandlers={{
                     click: () => { if (onClick) onClick(); }
