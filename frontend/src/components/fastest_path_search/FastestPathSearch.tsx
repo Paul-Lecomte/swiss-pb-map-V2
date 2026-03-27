@@ -926,17 +926,20 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       origin: {
         lat: Number(startStop.stop_lat),
         lon: Number(startStop.stop_lon),
-        radius_m: 150,
-        max_candidates: 15,
+        radius_m: 300,
+        max_candidates: 20,
+        seed_candidates: 6,
       },
       destination: {
         lat: Number(endStop.stop_lat),
         lon: Number(endStop.stop_lon),
-        radius_m: 50,
-        max_candidates: 15,
+        radius_m: 300,
+        max_candidates: 20,
+        seed_candidates: 8,
       },
       departure_time: departureTimeValue,
       algorithm: "raptor",
+      max_transfers: 2,
     };
 
     setIsLoading(true);

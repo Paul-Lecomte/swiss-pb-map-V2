@@ -7,15 +7,18 @@ export type FastestPathRequest = {
     lon: number;
     radius_m: number;
     max_candidates: number;
+    seed_candidates: number;
   };
   destination: {
     lat: number;
     lon: number;
     radius_m: number;
     max_candidates: number;
+    seed_candidates: number;
   };
   departure_time: string;
   algorithm: string;
+  max_transfers: number;
 };
 
 export type FastestPathResponse = unknown;
