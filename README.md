@@ -285,6 +285,7 @@ Tip: Start the server and visit `http://localhost:4000/` for a small landing pag
 - [x] Link stops fully with routes and timetables in UI
 - [x] Improved path search and UI integration
 - [x] Advanced UI: real-time positions, disruptions
+- [ ] Improve UI for the details and search
 - [ ] User accounts & favorites not working on it rn
 - [ ] Extend to other European networks
 - [ ] Mobile app version
