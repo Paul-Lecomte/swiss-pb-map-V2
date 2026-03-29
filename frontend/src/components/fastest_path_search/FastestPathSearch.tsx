@@ -40,6 +40,12 @@ type RaptorStopPoint = {
   trip_id: string;
   stop_id: string;
   arrival_time: number;
+  from_stop_id?: string;
+  walk_duration_seconds?: number;
+  walking_geometry?: {
+    type?: string;
+    coordinates?: number[][];
+  };
 };
 
 type RaptorOption = {
@@ -125,6 +131,16 @@ const formatDuration = (seconds: number) => {
   if (!hours) return `${minutes}m`;
   if (!minutes) return `${hours}h`;
   return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+};
+
+const isCoordinatePair = (value: unknown): value is number[] =>
+  Array.isArray(value) && value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]));
+
+const normalizeLineGeometry = (geometry: unknown): number[][] => {
+  if (!Array.isArray(geometry)) return [];
+  return geometry
+    .map((coord) => (isCoordinatePair(coord) ? [Number(coord[0]), Number(coord[1])] : null))
+    .filter((coord): coord is number[] => Array.isArray(coord));
 };
 
 const formatTransferText = (segment: RouteSummary["segments"][number]) => {
@@ -632,7 +648,10 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
       options
         .flatMap((option) => option.segments ?? [])
         .map((point) => point.trip_id)
-        .filter((tripId): tripId is string => typeof tripId === "string" && !!tripId)
+        .filter(
+          (tripId): tripId is string =>
+            typeof tripId === "string" && !!tripId && tripId !== "TRANSFER"
+        )
     )
   );
 
@@ -667,6 +686,46 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
           const lastPoint = group[group.length - 1];
           if (!firstPoint || !lastPoint) return null;
 
+          const isTransferGroup = firstPoint.trip_id === "TRANSFER";
+
+          if (isTransferGroup) {
+            const fromStopId = firstPoint.from_stop_id ?? firstPoint.stop_id;
+            const toStopId = lastPoint.stop_id;
+            const walkSeconds = Math.max(0, Number(firstPoint.walk_duration_seconds) || 0);
+            const startTime = Math.max(0, firstPoint.arrival_time - walkSeconds);
+            const walkingGeometry = normalizeLineGeometry(firstPoint.walking_geometry?.coordinates);
+
+            const transferSegment: RouteSummary["segments"][number] = {
+              id: `route-${optionIndex + 1}-segment-transfer-${groupIndex + 1}`,
+              mode: "walk",
+              line: "Walk",
+              direction: `${fromStopId} → ${toStopId}`,
+              travelTime: formatDuration(walkSeconds),
+              start_stop_id: fromStopId,
+              end_stop_id: toStopId,
+              walkingGeometry: walkingGeometry.length >= 2 ? walkingGeometry : undefined,
+              stops: [
+                {
+                  time: formatSecondsToClock(startTime),
+                  name: fromStopId,
+                  stop_id: fromStopId,
+                },
+                {
+                  time: formatSecondsToClock(lastPoint.arrival_time),
+                  name: toStopId,
+                  stop_id: toStopId,
+                },
+              ],
+            };
+
+            return {
+              segment: transferSegment,
+              firstPoint,
+              lastPoint,
+              isTransferGroup: true,
+            };
+          }
+
           const tripMeta = tripMetaMap.get(firstPoint.trip_id) ?? {
             line: firstPoint.trip_id,
             direction: "",
@@ -698,6 +757,7 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
             segment,
             firstPoint,
             lastPoint,
+            isTransferGroup: false,
           };
         })
         .filter(
@@ -707,6 +767,7 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
             segment: RouteSummary["segments"][number];
             firstPoint: RaptorStopPoint;
             lastPoint: RaptorStopPoint;
+            isTransferGroup: boolean;
           } => entry !== null
         );
 
@@ -718,6 +779,7 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
         if (index >= groupedSegments.length - 1) return;
 
         const nextEntry = groupedSegments[index + 1];
+        if (entry.isTransferGroup || nextEntry?.isTransferGroup) return;
         const fromStop = entry.segment.stops[entry.segment.stops.length - 1];
         const toStop = nextEntry.segment.stops[0];
         if (!fromStop || !toStop) return;
@@ -1134,28 +1196,26 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
 
         if (segment.mode !== "walk") continue;
 
-        const startCoord = resolveStopCoordinateFromMap(segment.start_stop_id, coordinatesByStopId);
-        const endCoord = resolveStopCoordinateFromMap(segment.end_stop_id, coordinatesByStopId);
-        if (!startCoord || !endCoord) continue;
-
-        nextFeatures.push({
-          type: "Feature",
-          geometry: {
-            type: "LineString",
-            coordinates: [
-              [startCoord.lon, startCoord.lat],
-              [endCoord.lon, endCoord.lat],
-            ],
-          },
-          properties: {
-            route_short_name: segment.line,
-            route_long_name: segment.direction,
-            segment_id: segment.id,
-            segment_mode: segment.mode,
-            fastest_path_color: getFastestPathSegmentColor(segment.mode),
-            fastest_path_dash: "8 8",
-          },
-        });
+        const walkingGeometry = normalizeLineGeometry(segment.walkingGeometry);
+        if (walkingGeometry.length >= 2) {
+          nextFeatures.push({
+            type: "Feature",
+            geometry: {
+              type: "LineString",
+              coordinates: walkingGeometry,
+            },
+            properties: {
+              route_short_name: segment.line,
+              route_long_name: segment.direction,
+              segment_id: segment.id,
+              segment_mode: segment.mode,
+              fastest_path_color: getFastestPathSegmentColor(segment.mode),
+              fastest_path_dash: "8 8",
+            },
+          });
+            continue;
+        }
+          // Walk segments without backend walking geometry are not rendered to avoid inaccurate straight lines.
       }
 
       if (cancelled) return;

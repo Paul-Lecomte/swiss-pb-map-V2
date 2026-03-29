@@ -15,6 +15,7 @@ export type RouteSegment = {
   direction: string;
   travelTime: string;
   stops: RouteStop[];
+  walkingGeometry?: number[][];
   trip_id?: string;
   start_stop_id?: string;
   end_stop_id?: string;
