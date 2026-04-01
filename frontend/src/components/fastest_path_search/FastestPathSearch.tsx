@@ -611,6 +611,40 @@ const clipFeatureToCoordinateRange = (
   };
 };
 
+const anchorCoordinatesToStops = (
+  coordinates: number[][],
+  startCoord?: StopCoordinate | null,
+  endCoord?: StopCoordinate | null
+) => {
+  if (!Array.isArray(coordinates) || !coordinates.length) return coordinates;
+
+  const anchored = [...coordinates];
+  const epsilon = 1e-6;
+  const samePoint = (left?: number[], right?: number[]) => {
+    if (!left || !right || left.length < 2 || right.length < 2) return false;
+    return (
+      Math.abs(Number(left[0]) - Number(right[0])) <= epsilon &&
+      Math.abs(Number(left[1]) - Number(right[1])) <= epsilon
+    );
+  };
+
+  if (startCoord) {
+    const startPoint = [startCoord.lon, startCoord.lat];
+    if (!samePoint(anchored[0], startPoint)) {
+      anchored.unshift(startPoint);
+    }
+  }
+
+  if (endCoord) {
+    const endPoint = [endCoord.lon, endCoord.lat];
+    if (!samePoint(anchored[anchored.length - 1], endPoint)) {
+      anchored.push(endPoint);
+    }
+  }
+
+  return anchored;
+};
+
 const dispatchFastestPathGeometry = (detail: FastestPathGeometryDetail) => {
   window.dispatchEvent(new CustomEvent("app:fastest-path-geometry", { detail }));
 };
@@ -733,11 +767,31 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
             stopNameById: {},
           };
 
-          const stops = group.map((stopPoint) => ({
-            time: formatSecondsToClock(stopPoint.arrival_time),
-            name: tripMeta.stopNameById[stopPoint.stop_id] ?? stopPoint.stop_id,
-            stop_id: stopPoint.stop_id,
-          }));
+          const segmentStartStopId = firstPoint.from_stop_id ?? firstPoint.stop_id;
+
+          const stops: RouteSummary["segments"][number]["stops"] = [];
+
+          if (segmentStartStopId) {
+            stops.push({
+              time: formatSecondsToClock(firstPoint.arrival_time),
+              name: tripMeta.stopNameById[segmentStartStopId] ?? segmentStartStopId,
+              stop_id: segmentStartStopId,
+            });
+          }
+
+          group.forEach((stopPoint) => {
+            const stopName = tripMeta.stopNameById[stopPoint.stop_id] ?? stopPoint.stop_id;
+            const previousStop = stops[stops.length - 1];
+            if (previousStop?.stop_id === stopPoint.stop_id) {
+              return;
+            }
+
+            stops.push({
+              time: formatSecondsToClock(stopPoint.arrival_time),
+              name: stopName,
+              stop_id: stopPoint.stop_id,
+            });
+          });
 
           const segmentDuration = Math.max(0, lastPoint.arrival_time - firstPoint.arrival_time);
 
@@ -748,7 +802,7 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
             direction: tripMeta.direction,
             travelTime: formatDuration(segmentDuration),
             trip_id: firstPoint.trip_id,
-            start_stop_id: firstPoint.stop_id,
+            start_stop_id: segmentStartStopId,
             end_stop_id: lastPoint.stop_id,
             stops,
           };
@@ -780,15 +834,19 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
 
         const nextEntry = groupedSegments[index + 1];
         if (entry.isTransferGroup || nextEntry?.isTransferGroup) return;
+
+        const nextBoardingStopId = nextEntry.firstPoint.from_stop_id ?? nextEntry.firstPoint.stop_id;
         const fromStop = entry.segment.stops[entry.segment.stops.length - 1];
-        const toStop = nextEntry.segment.stops[0];
+        const toStop =
+          nextEntry.segment.stops.find((stop) => stop.stop_id === nextBoardingStopId) ??
+          nextEntry.segment.stops[0];
         if (!fromStop || !toStop) return;
 
         const transferSeconds = Math.max(0, nextEntry.firstPoint.arrival_time - entry.lastPoint.arrival_time);
         const sameStop =
           !!entry.lastPoint.stop_id &&
-          !!nextEntry.firstPoint.stop_id &&
-          entry.lastPoint.stop_id === nextEntry.firstPoint.stop_id;
+          !!nextBoardingStopId &&
+          entry.lastPoint.stop_id === nextBoardingStopId;
 
         if (transferSeconds <= 0 && sameStop) return;
 
@@ -802,7 +860,7 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
             : `Change at ${fromStop.name}`,
           travelTime: formatDuration(transferSeconds),
           start_stop_id: entry.lastPoint.stop_id,
-          end_stop_id: nextEntry.firstPoint.stop_id,
+          end_stop_id: nextBoardingStopId,
           stops: [
             {
               time: formatSecondsToClock(entry.lastPoint.arrival_time),
@@ -812,7 +870,7 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
             {
               time: formatSecondsToClock(nextEntry.firstPoint.arrival_time),
               name: toStop.name,
-              stop_id: nextEntry.firstPoint.stop_id,
+              stop_id: nextBoardingStopId,
             },
           ],
         };
@@ -1001,7 +1059,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
       },
       departure_time: departureTimeValue,
       algorithm: "raptor",
-      max_transfers: 2,
+      max_transfers: 5,
     };
 
     setIsLoading(true);
@@ -1177,9 +1235,22 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
           segment.start_stop_id,
           segment.end_stop_id
         );
+        const anchoredCoords = anchorCoordinatesToStops(
+          robustClipped.geometry?.coordinates ?? [],
+          startCoord,
+          endCoord
+        );
 
         transitFeatureBySegmentId.set(segment.id, {
           ...robustClipped,
+          geometry: robustClipped.geometry
+            ? {
+                ...robustClipped.geometry,
+                coordinates: anchoredCoords.length
+                  ? anchoredCoords
+                  : robustClipped.geometry.coordinates,
+              }
+            : robustClipped.geometry,
           properties: {
             ...existingFeature.properties,
           },
@@ -1198,11 +1269,19 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
 
         const walkingGeometry = normalizeLineGeometry(segment.walkingGeometry);
         if (walkingGeometry.length >= 2) {
+          const startCoord = resolveStopCoordinateFromMap(segment.start_stop_id, coordinatesByStopId);
+          const endCoord = resolveStopCoordinateFromMap(segment.end_stop_id, coordinatesByStopId);
+          const anchoredWalkGeometry = anchorCoordinatesToStops(
+            walkingGeometry,
+            startCoord,
+            endCoord
+          );
+
           nextFeatures.push({
             type: "Feature",
             geometry: {
               type: "LineString",
-              coordinates: walkingGeometry,
+              coordinates: anchoredWalkGeometry,
             },
             properties: {
               route_short_name: segment.line,
@@ -1213,9 +1292,9 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
               fastest_path_dash: "8 8",
             },
           });
-            continue;
+          continue;
         }
-          // Walk segments without backend walking geometry are not rendered to avoid inaccurate straight lines.
+        // Walk segments without backend walking geometry are not rendered to avoid inaccurate straight lines.
       }
 
       if (cancelled) return;
