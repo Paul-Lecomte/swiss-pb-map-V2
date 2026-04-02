@@ -71,7 +71,7 @@ const FastestPathRouteDetails = ({
     .reduce((sum, segment) => sum + parseTravelMinutes(segment.travelTime), 0);
 
   return (
-    <aside className="absolute left-6 top-6 z-[130] w-[380px] max-w-[94vw] max-h-[calc(100vh-120px)] overflow-y-auto rounded-[32px] bg-white p-5 shadow-2xl animate-fadeIn border border-neutral-100">
+    <aside className="absolute left-1/2 bottom-3 z-[130] w-[min(95vw,420px)] -translate-x-1/2 max-h-[calc(100vh-120px)] overflow-y-auto rounded-[28px] polish-panel p-5 shadow-2xl animate-fadeIn sm:bottom-auto sm:left-6 sm:top-6 sm:w-[380px] sm:max-w-[94vw] sm:translate-x-0">
       <div className="flex items-center justify-between">
         <button
           className="rounded-full border border-neutral-200 p-2 text-neutral-700 transition hover:border-neutral-300"
@@ -144,7 +144,7 @@ const FastestPathRouteDetails = ({
                 key={segment.id}
                 type="button"
                 onClick={() => onSelectSegment(segment.id)}
-                className={`w-full rounded-2xl border px-3 py-3 text-left transition hover:shadow-sm hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-100 flex items-start gap-3 ${segmentCardClass}`}
+                className={`polish-card w-full rounded-2xl border px-3 py-3 text-left transition hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-100 flex items-start gap-3 ${segmentCardClass}`}
                 aria-label={`Open segment ${index + 1} details`}
               >
                 <div className="mt-0.5">
@@ -193,8 +193,8 @@ const FastestPathRouteDetails = ({
             <div className="absolute left-[9px] top-2 bottom-2 w-px bg-neutral-200" />
             <div className="space-y-4">
               {selectedSegment.stops.map((stop, index) => (
-                <div key={`${selectedSegment.id}-${index}`} className="flex items-start gap-3">
-                  <div className="mt-1 h-4 w-4 rounded-full border border-neutral-400 bg-white" />
+                <div key={`${selectedSegment.id}-${index}`} className="stagger-in flex items-start gap-3" style={{ animationDelay: `${index * 40}ms` }}>
+                  <div className="mt-1 h-4 w-4 rounded-full border border-neutral-400 bg-white shadow-[0_0_0_3px_rgba(255,255,255,0.9)]" />
                   <div className="flex-1 text-sm">
                     <div className="flex items-center justify-between gap-3">
                       <span className="font-medium text-neutral-800">{stop.name}</span>
