@@ -3,6 +3,8 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --panel-surface: rgba(255, 255, 255, 0.92);
+  --panel-border: rgba(15, 23, 42, 0.08);
 }
 
 @theme inline {
@@ -23,4 +25,62 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+.polish-panel {
+  background: var(--panel-surface);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: blur(10px);
+}
+
+.polish-card {
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.polish-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.polish-card:active {
+  transform: translateY(0);
+}
+
+.stagger-in {
+  animation: panel-enter 260ms ease both;
+}
+
+.soft-pulse {
+  animation: soft-pulse 2s ease-in-out infinite;
+}
+
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .polish-card,
+  .stagger-in,
+  .soft-pulse {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
 }
