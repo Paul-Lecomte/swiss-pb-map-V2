@@ -1007,6 +1007,13 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
     };
   }, [routes]);
 
+  const liveStatusMessage = useMemo(() => {
+    if (isLoading) return "Searching for best route options.";
+    if (errorMessage) return `Search failed: ${errorMessage}`;
+    if (!routes.length) return "No routes displayed yet.";
+    return `${routes.length} route${routes.length > 1 ? "s are" : " is"} available.`;
+  }, [errorMessage, isLoading, routes.length]);
+
   useEffect(() => {
     return () => abortRef.current?.abort();
   }, []);
@@ -1463,20 +1470,21 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
 
   return (
     <div
-      className={`absolute top-[92px] z-[130] w-[min(94vw,720px)] max-w-[94vw] transition-all duration-200 ${
+      className={`absolute top-[80px] z-[130] w-[min(95vw,720px)] max-w-[95vw] transition-all duration-300 sm:top-[92px] ${
         pickMode || selectedRoute
-          ? "left-6 translate-x-0 max-w-[360px] opacity-90"
+          ? "left-1/2 -translate-x-1/2 sm:left-6 sm:translate-x-0 sm:max-w-[380px] opacity-95"
           : "left-1/2 -translate-x-1/2"
       }`}
     >
+      <div className="sr-only" aria-live="polite">{liveStatusMessage}</div>
       {!selectedRoute && (
         <div
-          className={`space-y-4 rounded-[28px] bg-white shadow-2xl border border-neutral-100 transition-all duration-200 max-h-[calc(100vh-120px)] overflow-y-auto ${
+          className={`polish-panel space-y-4 rounded-[24px] sm:rounded-[28px] shadow-2xl transition-all duration-300 max-h-[calc(100vh-112px)] overflow-y-auto ${
             pickMode ? "p-3" : "p-5"
           }`}
         >
           {pickMode && (
-            <div className="rounded-[16px] border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+            <div className="stagger-in rounded-[16px] border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
               Click on the map to set the {pickMode === "start" ? "start" : "destination"} stop.
             </div>
           )}
@@ -1495,7 +1503,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             </button>
           </div>
 
-          <div className="rounded-[28px] border border-neutral-100 bg-gradient-to-b from-sky-50/60 to-white p-5 shadow-sm">
+          <div className="stagger-in rounded-[24px] sm:rounded-[28px] border border-neutral-100 bg-gradient-to-b from-sky-50/60 to-white p-5 shadow-sm">
             <div className="flex gap-4">
               <div className="flex flex-col items-center pt-2">
                 <div className="h-4 w-4 rounded-full border border-neutral-500 bg-white" />
@@ -1505,7 +1513,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
               <div className="flex-1 space-y-3">
                 <div className="relative">
                   <input
-                    className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 pr-10 text-base text-neutral-700 outline-none transition focus:border-neutral-300"
+                    className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 pr-10 text-base text-neutral-700 outline-none transition focus:border-neutral-300 focus:ring-2 focus:ring-sky-100"
                     placeholder="Starting location"
                     value={startLocation}
                     onChange={(event) => {
@@ -1553,10 +1561,13 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                   )}
                 </div>
                 {isSearchingStart && (
-                  <div className="text-xs text-neutral-400">Searching stops...</div>
+                  <div className="flex items-center gap-2 text-xs text-neutral-400">
+                    <span className="soft-pulse inline-block h-1.5 w-1.5 rounded-full bg-sky-500" />
+                    Searching stops...
+                  </div>
                 )}
                 {!!startOptions.length && !startStop && (
-                  <div className="max-h-40 overflow-auto rounded-xl border border-neutral-200 bg-white text-sm shadow">
+                  <div className="stagger-in max-h-40 overflow-auto rounded-xl border border-neutral-200 bg-white text-sm shadow">
                     {startOptions.map((stop) => (
                       <button
                         key={stop.stop_id}
@@ -1579,7 +1590,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                   <button
                     type="button"
                     onClick={handleSwapStops}
-                    className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-medium text-neutral-600 transition hover:border-neutral-300"
+                    className="polish-card rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-medium text-neutral-600 transition hover:border-neutral-300"
                     aria-label="Swap start and destination"
                   >
                     Swap
@@ -1587,7 +1598,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                 </div>
                 <div className="relative">
                   <input
-                    className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 pr-10 text-base text-neutral-700 outline-none transition focus:border-neutral-300"
+                    className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 pr-10 text-base text-neutral-700 outline-none transition focus:border-neutral-300 focus:ring-2 focus:ring-sky-100"
                     placeholder="Destination"
                     value={destination}
                     onChange={(event) => {
@@ -1635,10 +1646,13 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                   )}
                 </div>
                 {isSearchingEnd && (
-                  <div className="text-xs text-neutral-400">Searching stops...</div>
+                  <div className="flex items-center gap-2 text-xs text-neutral-400">
+                    <span className="soft-pulse inline-block h-1.5 w-1.5 rounded-full bg-sky-500" />
+                    Searching stops...
+                  </div>
                 )}
                 {!!endOptions.length && !endStop && (
-                  <div className="max-h-40 overflow-auto rounded-xl border border-neutral-200 bg-white text-sm shadow">
+                  <div className="stagger-in max-h-40 overflow-auto rounded-xl border border-neutral-200 bg-white text-sm shadow">
                     {endOptions.map((stop) => (
                       <button
                         key={stop.stop_id}
@@ -1661,7 +1675,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             </div>
           </div>
 
-          <div className="rounded-[24px] border border-neutral-100 bg-white px-4 py-3 shadow-sm">
+          <div className="stagger-in rounded-[24px] border border-neutral-100 bg-white px-4 py-3 shadow-sm">
             <button
               type="button"
               onClick={() => setShowAdvancedOptions((prev) => !prev)}
@@ -1696,6 +1710,13 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                     onChange={(event) => setDepartureTime(event.target.value)}
                   />
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setDepartureTime(getCurrentDateAndTime().time)}
+                  className="rounded-xl border border-neutral-200 px-3 py-2 text-xs font-semibold text-neutral-600 hover:border-neutral-300"
+                >
+                  Now
+                </button>
               </div>
             )}
           </div>
@@ -1713,13 +1734,13 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                 !startStop ||
                 !endStop
               }
-              className="flex-1 rounded-[18px] border border-blue-200 bg-blue-50 px-6 py-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-100 disabled:text-neutral-400"
+              className="polish-card flex-1 rounded-[18px] border border-blue-200 bg-blue-50 px-6 py-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-100 disabled:text-neutral-400"
             >
               {isLoading ? "Searching routes..." : "Find best route"}
             </button>
             <button
               type="button"
-              className="rounded-[18px] border border-neutral-200 px-4 py-3 text-xs font-medium text-neutral-600 hover:border-neutral-300"
+              className="polish-card rounded-[18px] border border-neutral-200 px-4 py-3 text-xs font-medium text-neutral-600 hover:border-neutral-300"
               onClick={() => {
                 const now = getCurrentDateAndTime();
                 setStartLocation("");
@@ -1762,6 +1783,10 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             )}
           </div>
 
+          {!!routes.length && (
+            <div className="text-[11px] text-neutral-500">Tip: tap a route card to open a detailed segment timeline.</div>
+          )}
+
           {!startStop || !endStop ? (
             <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs text-amber-700">
               Pick both stops from suggestions or map mode to get accurate routing.
@@ -1793,7 +1818,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
               </div>
             )}
 
-            {routes.map((route) => {
+            {routes.map((route, routeIndex) => {
               const firstMainSegment =
                 route.segments.find((segment) => segment.mode !== "walk") ?? route.segments[0];
               const mode = firstMainSegment?.mode || "train";
@@ -1820,11 +1845,12 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                   title={`${route.from.name} ${route.from.time} -> ${route.to.name} ${route.to.time} | ${route.duration}`}
                   aria-pressed={selectedRouteId === route.id}
                   aria-label={`Select route from ${route.from.name} at ${route.from.time} to ${route.to.name} at ${route.to.time}`}
-                  className={`w-full rounded-3xl border px-4 py-4 text-left transition transform-gpu hover:shadow-md hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200 ${
+                  className={`stagger-in polish-card w-full rounded-3xl border px-4 py-4 text-left transition transform-gpu hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200 ${
                     selectedRouteId === route.id
                       ? "border-neutral-200 bg-neutral-50 shadow-lg ring-1 ring-blue-50"
                       : "border-transparent"
                   }`}
+                  style={{ animationDelay: `${Math.min(routeIndex * 55, 260)}ms` }}
                 >
                   <div className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
                     <div className="flex items-center gap-1">
@@ -1911,11 +1937,11 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             onBackToOverview={() => setSelectedSegmentId(null)}
             onClose={handleCloseDetails}
           />
-          <div className="absolute right-0 top-0 rounded-full bg-white px-4 py-2 text-xs font-medium text-neutral-600 shadow border border-neutral-100">
+          <div className="absolute right-0 top-0 hidden rounded-full bg-white px-4 py-2 text-xs font-medium text-neutral-600 shadow border border-neutral-100 sm:block">
             {mapStatus}
           </div>
           {selectedSegment && (
-            <div className="absolute right-0 top-12 rounded-full bg-white px-3 py-2 text-[11px] text-neutral-500 shadow border border-neutral-100">
+            <div className="soft-pulse absolute right-0 top-12 hidden rounded-full bg-white px-3 py-2 text-[11px] text-neutral-500 shadow border border-neutral-100 sm:block">
               Map route highlighted
             </div>
           )}
