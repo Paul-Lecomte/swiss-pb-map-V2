@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import FastestPathRouteDetails, {
   RouteSummary,
@@ -910,6 +910,22 @@ const getErrorMessage = (error: unknown) => {
   return "Request failed.";
 };
 
+const parseDurationToMinutes = (duration: string) => {
+  const source = duration.toLowerCase();
+  const hourMatch = source.match(/(\d+)\s*h/);
+  const minuteMatch = source.match(/(\d+)\s*m/);
+  const hours = hourMatch ? Number(hourMatch[1]) : 0;
+  const minutes = minuteMatch ? Number(minuteMatch[1]) : 0;
+
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 0;
+  return hours * 60 + minutes;
+};
+
+const routeWalkMinutes = (route: RouteSummary) =>
+  route.segments
+    .filter((segment) => segment.mode === "walk")
+    .reduce((sum, segment) => sum + Math.max(0, parseDurationToMinutes(segment.travelTime) || 0), 0);
+
 type StopOption = {
   stop_id: string;
   stop_name: string;
@@ -939,9 +955,57 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   const [isSearchingStart, setIsSearchingStart] = useState(false);
   const [isSearchingEnd, setIsSearchingEnd] = useState(false);
   const [pickMode, setPickMode] = useState<PickMode>(null);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const enrichedRoutesRef = useRef<Set<string>>(new Set());
   const routeGeometryByRouteIdRef = useRef<Map<string, RouteFeature[]>>(new Map());
+
+  const routeHighlights = useMemo(() => {
+    if (!routes.length) {
+      return {
+        fastestRouteId: null as string | null,
+        fewestTransfersRouteId: null as string | null,
+        leastWalkRouteId: null as string | null,
+      };
+    }
+
+    let fastestRouteId = routes[0]?.id ?? null;
+    let fewestTransfersRouteId = routes[0]?.id ?? null;
+    let leastWalkRouteId = routes[0]?.id ?? null;
+    let bestDuration = Number.POSITIVE_INFINITY;
+    let bestTransfers = Number.POSITIVE_INFINITY;
+    let bestWalk = Number.POSITIVE_INFINITY;
+
+    routes.forEach((route) => {
+      const routeDuration = parseDurationToMinutes(route.duration);
+      const transfers = Math.max(
+        0,
+        route.segments.filter((segment) => segment.mode !== "walk").length - 1
+      );
+      const walkMinutes = routeWalkMinutes(route);
+
+      if (routeDuration < bestDuration) {
+        bestDuration = routeDuration;
+        fastestRouteId = route.id;
+      }
+
+      if (transfers < bestTransfers) {
+        bestTransfers = transfers;
+        fewestTransfersRouteId = route.id;
+      }
+
+      if (walkMinutes < bestWalk) {
+        bestWalk = walkMinutes;
+        leastWalkRouteId = route.id;
+      }
+    });
+
+    return {
+      fastestRouteId,
+      fewestTransfersRouteId,
+      leastWalkRouteId,
+    };
+  }, [routes]);
 
   useEffect(() => {
     return () => abortRef.current?.abort();
@@ -1381,6 +1445,22 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
     setEndOptions([]);
   };
 
+  const handleSwapStops = () => {
+    const nextStartText = destination;
+    const nextDestinationText = startLocation;
+    const nextStartStop = endStop;
+    const nextEndStop = startStop;
+
+    setStartLocation(nextStartText);
+    setDestination(nextDestinationText);
+    setStartStop(nextStartStop);
+    setEndStop(nextEndStop);
+    setStartOptions([]);
+    setEndOptions([]);
+    setPickMode(null);
+    setErrorMessage(null);
+  };
+
   return (
     <div
       className={`absolute top-[92px] z-[130] w-[min(94vw,720px)] max-w-[94vw] transition-all duration-200 ${
@@ -1401,7 +1481,10 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             </div>
           )}
           <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-neutral-800">Fastest path</div>
+            <div>
+              <div className="text-sm font-semibold text-neutral-800">Fastest path</div>
+              <div className="text-xs text-neutral-500">Compare routes by speed, transfers, and walk time</div>
+            </div>
             <button
               className="rounded-full border border-neutral-200 p-2 text-neutral-700 transition hover:border-neutral-300"
               type="button"
@@ -1412,29 +1495,47 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             </button>
           </div>
 
-          <div className="rounded-[32px] bg-white p-6 shadow-sm">
+          <div className="rounded-[28px] border border-neutral-100 bg-gradient-to-b from-sky-50/60 to-white p-5 shadow-sm">
             <div className="flex gap-4">
               <div className="flex flex-col items-center pt-2">
                 <div className="h-4 w-4 rounded-full border border-neutral-500 bg-white" />
-                <div className="h-10 w-px bg-neutral-300" />
+                <div className="h-22 w-px bg-neutral-300" />
                 <div className="h-4 w-4 rounded-full border border-neutral-500 bg-white" />
               </div>
               <div className="flex-1 space-y-3">
-                <input
-                  className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 text-base text-neutral-700 outline-none transition focus:border-neutral-300"
-                  placeholder="Starting location"
-                  value={startLocation}
-                  onChange={(event) => {
-                    setStartLocation(event.target.value);
-                    setStartStop(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !startStop && startOptions.length) {
-                      event.preventDefault();
-                      selectTopStart();
-                    }
-                  }}
-                />
+                <div className="relative">
+                  <input
+                    className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 pr-10 text-base text-neutral-700 outline-none transition focus:border-neutral-300"
+                    placeholder="Starting location"
+                    value={startLocation}
+                    onChange={(event) => {
+                      setStartLocation(event.target.value);
+                      setStartStop(null);
+                      setErrorMessage(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !startStop && startOptions.length) {
+                        event.preventDefault();
+                        selectTopStart();
+                      }
+                    }}
+                    aria-label="Starting location"
+                  />
+                  {!!startLocation && (
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full border border-neutral-200 px-2 py-1 text-[10px] text-neutral-500 hover:border-neutral-300"
+                      onClick={() => {
+                        setStartLocation("");
+                        setStartStop(null);
+                        setStartOptions([]);
+                      }}
+                      aria-label="Clear start location"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
                 <div className="flex items-center justify-between text-xs text-neutral-400">
                   <button
                     type="button"
@@ -1452,7 +1553,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                   )}
                 </div>
                 {isSearchingStart && (
-                  <div className="text-xs text-neutral-400">Searching...</div>
+                  <div className="text-xs text-neutral-400">Searching stops...</div>
                 )}
                 {!!startOptions.length && !startStop && (
                   <div className="max-h-40 overflow-auto rounded-xl border border-neutral-200 bg-white text-sm shadow">
@@ -1464,6 +1565,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                           setStartLocation(stop.stop_name);
                           setStartStop(stop);
                           setStartOptions([]);
+                          setErrorMessage(null);
                         }}
                         className="w-full px-3 py-2 text-left hover:bg-neutral-50"
                       >
@@ -1473,22 +1575,49 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                     ))}
                   </div>
                 )}
-                <div className="h-px w-full bg-neutral-200" />
-                <input
-                  className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 text-base text-neutral-700 outline-none transition focus:border-neutral-300"
-                  placeholder="Destination"
-                  value={destination}
-                  onChange={(event) => {
-                    setDestination(event.target.value);
-                    setEndStop(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !endStop && endOptions.length) {
-                      event.preventDefault();
-                      selectTopEnd();
-                    }
-                  }}
-                />
+                <div className="flex items-center justify-center">
+                  <button
+                    type="button"
+                    onClick={handleSwapStops}
+                    className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-medium text-neutral-600 transition hover:border-neutral-300"
+                    aria-label="Swap start and destination"
+                  >
+                    Swap
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 pr-10 text-base text-neutral-700 outline-none transition focus:border-neutral-300"
+                    placeholder="Destination"
+                    value={destination}
+                    onChange={(event) => {
+                      setDestination(event.target.value);
+                      setEndStop(null);
+                      setErrorMessage(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !endStop && endOptions.length) {
+                        event.preventDefault();
+                        selectTopEnd();
+                      }
+                    }}
+                    aria-label="Destination"
+                  />
+                  {!!destination && (
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full border border-neutral-200 px-2 py-1 text-[10px] text-neutral-500 hover:border-neutral-300"
+                      onClick={() => {
+                        setDestination("");
+                        setEndStop(null);
+                        setEndOptions([]);
+                      }}
+                      aria-label="Clear destination"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
                 <div className="flex items-center justify-between text-xs text-neutral-400">
                   <button
                     type="button"
@@ -1506,7 +1635,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                   )}
                 </div>
                 {isSearchingEnd && (
-                  <div className="text-xs text-neutral-400">Searching...</div>
+                  <div className="text-xs text-neutral-400">Searching stops...</div>
                 )}
                 {!!endOptions.length && !endStop && (
                   <div className="max-h-40 overflow-auto rounded-xl border border-neutral-200 bg-white text-sm shadow">
@@ -1518,6 +1647,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                           setDestination(stop.stop_name);
                           setEndStop(stop);
                           setEndOptions([]);
+                          setErrorMessage(null);
                         }}
                         className="w-full px-3 py-2 text-left hover:bg-neutral-50"
                       >
@@ -1531,61 +1661,138 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             </div>
           </div>
 
-          <div className="rounded-[32px] bg-white px-6 py-3 shadow-sm">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <div className="flex-1">
-                <input
-                  type="date"
-                  className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 text-sm text-neutral-600 outline-none focus:border-neutral-300"
-                  value={departureDate}
-                  onChange={(event) => setDepartureDate(event.target.value)}
-                />
+          <div className="rounded-[24px] border border-neutral-100 bg-white px-4 py-3 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setShowAdvancedOptions((prev) => !prev)}
+              className="flex w-full items-center justify-between rounded-xl px-2 py-1 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+              aria-expanded={showAdvancedOptions}
+            >
+              <span>Departure options</span>
+              <span className="text-xs text-neutral-500">{showAdvancedOptions ? "Hide" : "Show"}</span>
+            </button>
+            {showAdvancedOptions && (
+              <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="flex-1">
+                  <label className="mb-1 block text-[11px] uppercase tracking-wide text-neutral-500">
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 text-sm text-neutral-600 outline-none focus:border-neutral-300"
+                    value={departureDate}
+                    onChange={(event) => setDepartureDate(event.target.value)}
+                  />
+                </div>
+                <div className="hidden h-10 w-px bg-neutral-200 sm:block" />
+                <div className="flex-1">
+                  <label className="mb-1 block text-[11px] uppercase tracking-wide text-neutral-500">
+                    Time
+                  </label>
+                  <input
+                    type="time"
+                    className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 text-sm text-neutral-600 outline-none focus:border-neutral-300"
+                    value={departureTime}
+                    onChange={(event) => setDepartureTime(event.target.value)}
+                  />
+                </div>
               </div>
-              <div className="hidden h-10 w-px bg-neutral-200 sm:block" />
-              <div className="flex-1">
-                <input
-                  type="time"
-                  className="w-full rounded-xl border border-transparent bg-neutral-50 px-4 py-3 text-sm text-neutral-600 outline-none focus:border-neutral-300"
-                  value={departureTime}
-                  onChange={(event) => setDepartureTime(event.target.value)}
-                />
-              </div>
-            </div>
+            )}
           </div>
 
-          <button
-            type="button"
-            onClick={handleSearch}
-            disabled={
-              isLoading ||
-              !startLocation.trim() ||
-              !destination.trim() ||
-              !departureDate ||
-              !departureTime ||
-              !startStop ||
-              !endStop
-            }
-            className="rounded-[20px] border border-blue-200 bg-blue-50 px-6 py-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-100 disabled:text-neutral-400"
-          >
-            {isLoading ? "Searching..." : "Search"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleSearch}
+              disabled={
+                isLoading ||
+                !startLocation.trim() ||
+                !destination.trim() ||
+                !departureDate ||
+                !departureTime ||
+                !startStop ||
+                !endStop
+              }
+              className="flex-1 rounded-[18px] border border-blue-200 bg-blue-50 px-6 py-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-100 disabled:text-neutral-400"
+            >
+              {isLoading ? "Searching routes..." : "Find best route"}
+            </button>
+            <button
+              type="button"
+              className="rounded-[18px] border border-neutral-200 px-4 py-3 text-xs font-medium text-neutral-600 hover:border-neutral-300"
+              onClick={() => {
+                const now = getCurrentDateAndTime();
+                setStartLocation("");
+                setDestination("");
+                setStartStop(null);
+                setEndStop(null);
+                setStartOptions([]);
+                setEndOptions([]);
+                setRoutes([]);
+                setSelectedRouteId(null);
+                setSelectedSegmentId(null);
+                setErrorMessage(null);
+                setDepartureDate(now.date);
+                setDepartureTime(now.time);
+              }}
+            >
+              Reset
+            </button>
+          </div>
 
           {errorMessage && (
-            <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-2 text-xs text-rose-600">
-              {errorMessage}
+            <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-600">
+              <div>{errorMessage}</div>
+              <button
+                type="button"
+                onClick={handleSearch}
+                className="mt-2 rounded-full border border-rose-200 bg-white px-3 py-1 text-[11px] font-semibold text-rose-600 hover:border-rose-300"
+              >
+                Retry search
+              </button>
             </div>
           )}
 
-          <div className="text-center text-sm font-semibold uppercase tracking-[0.3em] text-neutral-400">
-            Results
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold uppercase tracking-[0.22em] text-neutral-400">
+              Results
+            </div>
+            {!!routes.length && (
+              <div className="text-xs text-neutral-500">{routes.length} route{routes.length > 1 ? "s" : ""}</div>
+            )}
           </div>
 
+          {!startStop || !endStop ? (
+            <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs text-amber-700">
+              Pick both stops from suggestions or map mode to get accurate routing.
+            </div>
+          ) : null}
+
           <div className="results-scroll max-h-[46vh] overflow-auto rounded-[24px] bg-white px-2 py-2 border border-neutral-100">
-            {!routes.length && !isLoading && !errorMessage && (
-              <div className="px-4 py-6 text-center text-xs text-neutral-400">
-                No results yet. Launch a search to see routes.
+            {isLoading && (
+              <div className="space-y-2 p-2">
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <div
+                    key={`route-skeleton-${index}`}
+                    className="animate-pulse rounded-2xl border border-neutral-100 bg-neutral-50 p-4"
+                  >
+                    <div className="h-3 w-24 rounded bg-neutral-200" />
+                    <div className="mt-3 h-4 w-40 rounded bg-neutral-200" />
+                    <div className="mt-3 h-3 w-full rounded bg-neutral-200" />
+                  </div>
+                ))}
               </div>
             )}
+
+            {!routes.length && !isLoading && !errorMessage && (
+              <div className="px-4 py-8 text-center">
+                <div className="text-sm font-semibold text-neutral-700">No route yet</div>
+                <div className="mt-1 text-xs text-neutral-500">
+                  Enter start and destination, then run a search.
+                </div>
+              </div>
+            )}
+
             {routes.map((route) => {
               const firstMainSegment =
                 route.segments.find((segment) => segment.mode !== "walk") ?? route.segments[0];
@@ -1601,14 +1808,16 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
               };
 
               const badgeClass = badgeColors[mode] ?? badgeColors.train;
-              const transferCount = route.segments.filter((segment) => segment.mode !== "walk").length - 1;
+              const transferCount =
+                route.segments.filter((segment) => segment.mode !== "walk").length - 1;
+              const walkMinutes = routeWalkMinutes(route);
 
               return (
                 <button
                   key={route.id}
                   type="button"
                   onClick={() => handleRouteSelect(route.id)}
-                  title={`${route.from.name} ${route.from.time} → ${route.to.name} ${route.to.time} • ${route.duration}`}
+                  title={`${route.from.name} ${route.from.time} -> ${route.to.name} ${route.to.time} | ${route.duration}`}
                   aria-pressed={selectedRouteId === route.id}
                   aria-label={`Select route from ${route.from.name} at ${route.from.time} to ${route.to.name} at ${route.to.time}`}
                   className={`w-full rounded-3xl border px-4 py-4 text-left transition transform-gpu hover:shadow-md hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200 ${
@@ -1617,7 +1826,27 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                       : "border-transparent"
                   }`}
                 >
-                  <div className="flex flex-col gap-4 md:flex-row md:items-center">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+                    <div className="flex items-center gap-1">
+                      {routeHighlights.fastestRouteId === route.id && (
+                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700">
+                          Fastest
+                        </span>
+                      )}
+                      {routeHighlights.fewestTransfersRouteId === route.id && (
+                        <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 font-semibold text-sky-700">
+                          Fewest transfers
+                        </span>
+                      )}
+                      {routeHighlights.leastWalkRouteId === route.id && (
+                        <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 font-semibold text-amber-700">
+                          Least walking
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-2 flex flex-col gap-4 md:flex-row md:items-center">
                     <div className="flex items-center gap-3">
                       <RouteMainIcon mode={mode} />
                       <div>
@@ -1663,7 +1892,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                   <RouteTransfers segments={route.segments} />
                   <div className="mt-3 flex items-center justify-between text-xs text-neutral-500">
                     <span>{Math.max(0, transferCount)} transfer{Math.max(0, transferCount) > 1 ? "s" : ""}</span>
-                    <span>{route.duration}</span>
+                    <span>{walkMinutes} min walk</span>
                   </div>
                 </button>
               );
