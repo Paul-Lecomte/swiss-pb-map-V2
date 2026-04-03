@@ -27,30 +27,87 @@ export default function Search({ onHamburger, onStopSelect, onAvatarClick }: Pro
     const [query, setQuery] = useState("");
     const [suggestions, setSuggestions] = useState<Stop[]>([]);
     const [type, setType] = useState<string>("");
+    const [isLoading, setIsLoading] = useState(false);
+    const [activeIndex, setActiveIndex] = useState<number>(-1);
 
     useEffect(() => {
-        if (query.length === 0) {
+        const normalizedQuery = query.trim();
+        if (normalizedQuery.length < 2) {
             setSuggestions([]);
+            setIsLoading(false);
+            setActiveIndex(-1);
             return;
         }
+
         let cancelled = false;
-        searchProcessedStops(query, type)
+        setIsLoading(true);
+        const timer = setTimeout(() => {
+            searchProcessedStops(normalizedQuery, type)
             .then(data => {
-                if (!cancelled) setSuggestions(data);
+                if (!cancelled) {
+                    setSuggestions(Array.isArray(data) ? data : []);
+                    setActiveIndex(-1);
+                }
             })
-            .catch(() => {});
-        return () => { cancelled = true; };
+            .catch(() => {
+                if (!cancelled) {
+                    setSuggestions([]);
+                    setActiveIndex(-1);
+                }
+            })
+            .finally(() => {
+                if (!cancelled) {
+                    setIsLoading(false);
+                }
+            });
+        }, 220);
+
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+        };
     }, [query, type]);
 
     const handleSelect = (stop: Stop) => {
-        console.log("Suggestion clicked:", stop); // Added log
         setQuery("");
         setSuggestions([]);
+        setActiveIndex(-1);
         if (onStopSelect) onStopSelect(stop);
         try {
             window.dispatchEvent(new CustomEvent("app:stop-select", { detail: stop }));
         } catch {}
     };
+
+    const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (!suggestions.length) return;
+
+        if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setActiveIndex((previous) => (previous + 1) % suggestions.length);
+            return;
+        }
+
+        if (event.key === "ArrowUp") {
+            event.preventDefault();
+            setActiveIndex((previous) => (previous <= 0 ? suggestions.length - 1 : previous - 1));
+            return;
+        }
+
+        if (event.key === "Enter") {
+            if (activeIndex < 0 || activeIndex >= suggestions.length) return;
+            event.preventDefault();
+            handleSelect(suggestions[activeIndex]);
+            return;
+        }
+
+        if (event.key === "Escape") {
+            setSuggestions([]);
+            setActiveIndex(-1);
+        }
+    };
+
+    const showSuggestions = suggestions.length > 0;
+    const showNoResults = query.trim().length >= 2 && !isLoading && suggestions.length === 0;
 
     return (
         <div className="search-bar">
@@ -70,8 +127,27 @@ export default function Search({ onHamburger, onStopSelect, onAvatarClick }: Pro
                 className="search-input"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
+                onKeyDown={handleInputKeyDown}
                 autoComplete="off"
+                role="combobox"
+                aria-expanded={showSuggestions}
+                aria-controls="search-station-suggestions"
+                aria-activedescendant={activeIndex >= 0 ? `search-stop-${activeIndex}` : undefined}
             />
+            {!!query && (
+                <button
+                    type="button"
+                    className="search-clear"
+                    onClick={() => {
+                        setQuery("");
+                        setSuggestions([]);
+                        setActiveIndex(-1);
+                    }}
+                    aria-label="Clear search"
+                >
+                    Clear
+                </button>
+            )}
             <select
                 className="search-type-select"
                 value={type}
@@ -97,24 +173,39 @@ export default function Search({ onHamburger, onStopSelect, onAvatarClick }: Pro
             >
                 <img src="/fastest_path.png" alt="Fastest path" className="h-4 w-4 object-contain" draggable={false} />
             </button>
-            {suggestions.length > 0 && (
-                <ul className="search-suggestions">
-                    {suggestions.map(stop => (
+            {isLoading && (
+                <div className="search-loading" aria-live="polite">Searching stations...</div>
+            )}
+            {showSuggestions && (
+                <ul className="search-suggestions" id="search-station-suggestions" role="listbox">
+                    {suggestions.map((stop, index) => (
                         <li
                             key={stop.stop_id}
-                            className="search-suggestion-item"
-                            onClick={() => handleSelect(stop)}
+                            id={`search-stop-${index}`}
+                            role="option"
+                            aria-selected={activeIndex === index}
+                            className={`search-suggestion-item ${activeIndex === index ? "active" : ""}`}
                         >
-                            <span className="suggestion-icon">
-                                {typeIcons[stop.location_type ?? ""] ?? "📍"}
-                            </span>
-                            <span className="suggestion-name">{stop.stop_name}</span>
-                            {stop.location_type && (
-                                <span className="suggestion-type">{stop.location_type}</span>
-                            )}
+                            <button
+                                type="button"
+                                className="search-suggestion-button"
+                                onMouseEnter={() => setActiveIndex(index)}
+                                onClick={() => handleSelect(stop)}
+                            >
+                                <span className="suggestion-icon">
+                                    {typeIcons[stop.location_type ?? ""] ?? "📍"}
+                                </span>
+                                <span className="suggestion-name">{stop.stop_name}</span>
+                                {stop.location_type && (
+                                    <span className="suggestion-type">{stop.location_type}</span>
+                                )}
+                            </button>
                         </li>
                     ))}
                 </ul>
+            )}
+            {showNoResults && (
+                <div className="search-no-results">No stations found. Try another name.</div>
             )}
         </div>
     );

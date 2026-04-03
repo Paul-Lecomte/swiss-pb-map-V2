@@ -11,46 +11,37 @@ type Props = {
 };
 
 export default function SideMenu({ onClose, onLayerOption, onStation, onOption, onAbout }: Props) {
+    const items = [
+        { label: "Layer options", onClick: onLayerOption },
+        { label: "Stations", onClick: onStation },
+        { label: "Options", onClick: onOption },
+        { label: "About", onClick: onAbout },
+    ];
+
     return (
-        <div
-            style={{
-                width: 160,
-                background: "#fff",
-                border: "1px solid rgba(0,0,0,0.15)",
-                borderRadius: 10,
-                boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
-                padding: 10,
-                color: "#222",
-            }}
-        >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <strong style={{ fontSize: 12 }}>Menu</strong>
-                <button onClick={onClose} aria-label="Close" style={{ background: "transparent", border: "none", cursor: "pointer" }}>✕</button>
+        <div className="polish-panel w-[188px] rounded-2xl p-3 text-slate-800 shadow-xl">
+            <div className="mb-2 flex items-center justify-between">
+                <strong className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">Menu</strong>
+                <button
+                    onClick={onClose}
+                    aria-label="Close"
+                    className="rounded-full border border-slate-200 px-2 py-1 text-xs text-slate-500 transition hover:border-slate-300"
+                >
+                    x
+                </button>
             </div>
-            <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12 }}>
-                <li>
-                    <button onClick={onLayerOption} style={itemBtn}>Layer option</button>
-                </li>
-                <li>
-                    <button onClick={onStation} style={itemBtn}>Stations</button>
-                </li>
-                <li>
-                    <button onClick={onOption} style={itemBtn}>Options</button>
-                </li>
-                <li>
-                    <button onClick={onAbout} style={itemBtn}>About</button>
-                </li>
+            <ul className="m-0 list-none p-0 text-sm">
+                {items.map((item) => (
+                    <li key={item.label}>
+                        <button
+                            onClick={item.onClick}
+                            className="polish-card mt-1 w-full rounded-xl border border-transparent px-3 py-2 text-left text-sm font-medium text-slate-700 transition hover:border-slate-200 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-100"
+                        >
+                            {item.label}
+                        </button>
+                    </li>
+                ))}
             </ul>
         </div>
     );
 }
-
-const itemBtn: React.CSSProperties = {
-    width: "100%",
-    textAlign: "left",
-    background: "transparent",
-    border: "none",
-    padding: "8px 6px",
-    borderRadius: 6,
-    cursor: "pointer",
-};

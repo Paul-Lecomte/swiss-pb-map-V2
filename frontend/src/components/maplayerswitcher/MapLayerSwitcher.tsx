@@ -48,16 +48,20 @@ const MapLayerSwitcher: React.FC<MapLayerSwitcherProps> = ({ selectedLayer, onCh
                 bottom: 10,
                 left: 10,
                 zIndex: 1000,
-                background: "white",
+                background: "rgba(255,255,255,0.95)",
                 padding: "6px",
-                borderRadius: "8px",
-                boxShadow: "0 2px 6px rgba(0,0,0,0.2)"
+                borderRadius: "12px",
+                border: "1px solid rgba(15, 23, 42, 0.1)",
+                boxShadow: "0 10px 24px rgba(0,0,0,0.12)"
             }}
         >
             {/* Collapsed button */}
             {!open && (
-                <div
+                <button
+                    type="button"
                     onClick={() => setOpen(true)}
+                    aria-label="Open map layer switcher"
+                    title="Change map style"
                     style={{
                         width: "70px",
                         height: "70px",
@@ -65,7 +69,9 @@ const MapLayerSwitcher: React.FC<MapLayerSwitcherProps> = ({ selectedLayer, onCh
                         overflow: "hidden",
                         cursor: "pointer",
                         border: "1px solid #ccc",
-                        position: "relative"
+                        position: "relative",
+                        padding: 0,
+                        background: "transparent"
                     }}
                 >
                     <img
@@ -88,51 +94,79 @@ const MapLayerSwitcher: React.FC<MapLayerSwitcherProps> = ({ selectedLayer, onCh
                     >
                         {selected.name}
                     </div>
-                </div>
+                </button>
             )}
 
             {/* Expanded menu */}
             {open && (
-                <div style={{ display: "flex", gap: "8px" }}>
-                    {layers.map((layer) => (
-                        <div
-                            key={layer.name}
-                            onClick={() => {
-                                onChange(layer.name);
-                                setOpen(false); // close after selecting
-                            }}
+                <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                        <span style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#475569" }}>
+                            Map style
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => setOpen(false)}
+                            aria-label="Close map layer switcher"
                             style={{
-                                width: "70px",
-                                height: "70px",
-                                borderRadius: "6px",
-                                overflow: "hidden",
-                                cursor: "pointer",
-                                border: layer.name === selectedLayer ? "3px solid #0078D7" : "1px solid #ccc",
-                                position: "relative"
+                                border: "1px solid #d5dce5",
+                                borderRadius: "999px",
+                                background: "white",
+                                color: "#475569",
+                                fontSize: "11px",
+                                padding: "2px 8px",
+                                cursor: "pointer"
                             }}
                         >
-                            <img
-                                src={layer.thumbnail}
-                                alt={layer.name}
-                                style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                            />
-                            <div
+                            Close
+                        </button>
+                    </div>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                        {layers.map((layer) => (
+                            <button
+                                key={layer.name}
+                                type="button"
+                                onClick={() => {
+                                    onChange(layer.name);
+                                    setOpen(false);
+                                }}
+                                aria-pressed={layer.name === selectedLayer}
+                                title={`Use ${layer.name} map`}
                                 style={{
-                                    position: "absolute",
-                                    bottom: 0,
-                                    left: 0,
-                                    right: 0,
-                                    background: "rgba(0,0,0,0.6)",
-                                    color: "white",
-                                    fontSize: "12px",
-                                    textAlign: "center",
-                                    padding: "2px"
+                                    width: "70px",
+                                    height: "70px",
+                                    borderRadius: "6px",
+                                    overflow: "hidden",
+                                    cursor: "pointer",
+                                    border: layer.name === selectedLayer ? "3px solid #0078D7" : "1px solid #ccc",
+                                    position: "relative",
+                                    padding: 0,
+                                    background: "transparent"
                                 }}
                             >
-                                {layer.name}
-                            </div>
-                        </div>
-                    ))}
+                                <img
+                                    src={layer.thumbnail}
+                                    alt={layer.name}
+                                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                                />
+                                <div
+                                    style={{
+                                        position: "absolute",
+                                        bottom: 0,
+                                        left: 0,
+                                        right: 0,
+                                        background: "rgba(0,0,0,0.6)",
+                                        color: "white",
+                                        fontSize: "12px",
+                                        textAlign: "center",
+                                        padding: "2px"
+                                    }}
+                                >
+                                    {layer.name}
+                                </div>
+                            </button>
+                        ))}
+                    </div>
                 </div>
             )}
         </div>
