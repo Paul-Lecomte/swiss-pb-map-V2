@@ -145,13 +145,32 @@ function normalizeTripUpdate(rawTU) {
     const trip = rawTU.trip || {};
     const stuList = rawTU.stopTimeUpdate || [];
 
+    const normalizeScheduleRelationship = (value) => {
+        if (value == null) return null;
+        if (typeof value === 'string') return value;
+        const enumMap = {
+            0: 'SCHEDULED',
+            1: 'ADDED',
+            2: 'UNSCHEDULED',
+            3: 'CANCELED',
+            5: 'REPLACEMENT',
+            6: 'DUPLICATED',
+        };
+        return enumMap[value] || String(value);
+    };
+
+    const tripScheduleRelationship = normalizeScheduleRelationship(trip.scheduleRelationship);
+    const isCanceled = tripScheduleRelationship === 'CANCELED';
+
     const norm = {
         trip: {
             tripId: trip.tripId || null,
             routeId: trip.routeId || null,
             startTime: trip.startTime || null,
             startDate: trip.startDate || null,
-            originalTripId: trip.originalTripId || null
+            originalTripId: trip.originalTripId || null,
+            scheduleRelationship: tripScheduleRelationship,
+            isCanceled
         },
         stopTimeUpdates: stuList.map(stu => ({
             stopId: stu.stopId || null,
@@ -160,6 +179,7 @@ function normalizeTripUpdate(rawTU) {
             departureTimeSecs: stu.departure && stu.departure.time != null ? Number(stu.departure.time) : null,
             arrivalDelaySecs: stu.arrival && stu.arrival.delay != null ? Number(stu.arrival.delay) : null,
             departureDelaySecs: stu.departure && stu.departure.delay != null ? Number(stu.departure.delay) : null,
+            scheduleRelationship: normalizeScheduleRelationship(stu.scheduleRelationship),
         }))
     };
     return norm;
