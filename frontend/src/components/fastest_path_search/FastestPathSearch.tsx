@@ -3,11 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import FastestPathRouteDetails, {
+  RealtimeStatus,
   RouteSummary,
 } from "../fastest_path_route/FastestPathRouteDetails";
 import { fetchFastestPath, FastestPathRequest } from "@/services/FastestPathApiCalls";
 import { searchProcessedStops } from "@/services/StopsApiCalls";
 import { getRouteGeometryByTrip } from "@/services/RouteApi";
+import {
+  RealtimeTripUpdate,
+  realtimeUpdatesByTripIds,
+} from "@/services/RealtimeApiCalls";
 
 type Props = {
   onCloseAction: () => void;
@@ -926,6 +931,167 @@ const routeWalkMinutes = (route: RouteSummary) =>
     .filter((segment) => segment.mode === "walk")
     .reduce((sum, segment) => sum + Math.max(0, parseDurationToMinutes(segment.travelTime) || 0), 0);
 
+const normalizeStatusFromDelay = (delaySeconds: number | null): RealtimeStatus => {
+  if (delaySeconds == null || !Number.isFinite(delaySeconds)) return "unknown";
+  if (delaySeconds >= 60) return "delayed";
+  if (delaySeconds <= -60) return "early";
+  return "on-time";
+};
+
+const computeDelayFromTripUpdate = (tripUpdate: RealtimeTripUpdate): number | null => {
+  const updates = Array.isArray(tripUpdate.stopTimeUpdates) ? tripUpdate.stopTimeUpdates : [];
+  if (!updates.length) return null;
+
+  const sorted = [...updates]
+    .filter((entry) => typeof entry.stopSequence === "number" || entry.stopId)
+    .sort((left, right) => (Number(left.stopSequence ?? 0) - Number(right.stopSequence ?? 0)));
+
+  for (let index = sorted.length - 1; index >= 0; index -= 1) {
+    const entry = sorted[index];
+    const delay =
+      typeof entry.departureDelaySecs === "number"
+        ? entry.departureDelaySecs
+        : typeof entry.arrivalDelaySecs === "number"
+          ? entry.arrivalDelaySecs
+          : null;
+    if (typeof delay === "number" && Number.isFinite(delay)) return delay;
+  }
+
+  return null;
+};
+
+const buildRealtimeIndex = (tripUpdates: RealtimeTripUpdate[]) => {
+  const map = new Map<string, RealtimeTripUpdate>();
+  tripUpdates.forEach((tripUpdate) => {
+    const tripId = tripUpdate.trip?.tripId;
+    const originalTripId = tripUpdate.trip?.originalTripId;
+    if (typeof tripId === "string" && tripId.trim()) map.set(tripId, tripUpdate);
+    if (typeof originalTripId === "string" && originalTripId.trim()) map.set(originalTripId, tripUpdate);
+  });
+  return map;
+};
+
+const applyRealtimeStatusToRoutes = async (routes: RouteSummary[]) => {
+  const tripIds = Array.from(
+    new Set(
+      routes
+        .flatMap((route) => route.segments)
+        .map((segment) => segment.trip_id)
+        .filter((tripId): tripId is string => typeof tripId === "string" && !!tripId)
+    )
+  );
+
+  if (!tripIds.length) {
+    return {
+      routes,
+      fetchedAt: null as string | null,
+    };
+  }
+
+  try {
+    const realtimeResponse = await realtimeUpdatesByTripIds(tripIds);
+    const updates = Array.isArray(realtimeResponse.tripUpdates)
+      ? realtimeResponse.tripUpdates
+      : [];
+    const indexByTripId = buildRealtimeIndex(updates);
+
+    const enrichedRoutes = routes.map((route) => {
+      const enrichedSegments = route.segments.map((segment) => {
+        if (!segment.trip_id) return segment;
+
+        const tripUpdate = indexByTripId.get(segment.trip_id);
+        if (!tripUpdate) {
+          return {
+            ...segment,
+            realtimeStatus: "unknown" as RealtimeStatus,
+            realtimeDelaySeconds: null,
+          };
+        }
+
+        const tripIsCanceled =
+          tripUpdate.trip?.isCanceled === true ||
+          tripUpdate.trip?.scheduleRelationship === "CANCELED";
+        const delaySeconds = computeDelayFromTripUpdate(tripUpdate);
+
+        return {
+          ...segment,
+          realtimeStatus: tripIsCanceled
+            ? ("canceled" as RealtimeStatus)
+            : normalizeStatusFromDelay(delaySeconds),
+          realtimeDelaySeconds: delaySeconds,
+        };
+      });
+
+      const transitSegments = enrichedSegments.filter((segment) => !!segment.trip_id);
+      const canceledSegment = transitSegments.find((segment) => segment.realtimeStatus === "canceled");
+      const delayedSegments = transitSegments.filter((segment) => segment.realtimeStatus === "delayed");
+      const earlySegments = transitSegments.filter((segment) => segment.realtimeStatus === "early");
+      const onTimeSegments = transitSegments.filter((segment) => segment.realtimeStatus === "on-time");
+
+      let routeStatus: RealtimeStatus = "unknown";
+      let routeDelaySeconds: number | null = null;
+
+      if (canceledSegment) {
+        routeStatus = "canceled";
+      } else if (delayedSegments.length) {
+        routeStatus = "delayed";
+        routeDelaySeconds = Math.max(
+          ...delayedSegments.map((segment) => Number(segment.realtimeDelaySeconds ?? 0))
+        );
+      } else if (earlySegments.length) {
+        routeStatus = "early";
+        routeDelaySeconds = Math.min(
+          ...earlySegments.map((segment) => Number(segment.realtimeDelaySeconds ?? 0))
+        );
+      } else if (onTimeSegments.length) {
+        routeStatus = "on-time";
+        routeDelaySeconds = 0;
+      }
+
+      return {
+        ...route,
+        segments: enrichedSegments,
+        realtimeStatus: routeStatus,
+        realtimeDelaySeconds: routeDelaySeconds,
+      };
+    });
+
+    return {
+      routes: enrichedRoutes,
+      fetchedAt: typeof realtimeResponse.fetchedAt === "string" ? realtimeResponse.fetchedAt : null,
+    };
+  } catch {
+    return {
+      routes,
+      fetchedAt: null as string | null,
+    };
+  }
+};
+
+const getRealtimeBadgeClass = (status?: RealtimeStatus) => {
+  if (status === "canceled") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (status === "delayed") return "border-amber-200 bg-amber-50 text-amber-700";
+  if (status === "early") return "border-sky-200 bg-sky-50 text-sky-700";
+  if (status === "on-time") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  return "border-neutral-200 bg-neutral-50 text-neutral-600";
+};
+
+const formatRealtimeLabel = (status?: RealtimeStatus, delaySeconds?: number | null) => {
+  if (!status || status === "unknown") return null;
+  if (status === "canceled") return "Canceled";
+
+  if (typeof delaySeconds === "number" && Number.isFinite(delaySeconds)) {
+    const delayMinutes = Math.max(1, Math.round(Math.abs(delaySeconds) / 60));
+    if (status === "delayed") return `Delay +${delayMinutes}m`;
+    if (status === "early") return `Early -${delayMinutes}m`;
+  }
+
+  if (status === "on-time") return "On time";
+  if (status === "delayed") return "Delayed";
+  if (status === "early") return "Early";
+  return null;
+};
+
 type StopOption = {
   stop_id: string;
   stop_name: string;
@@ -956,6 +1122,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   const [isSearchingEnd, setIsSearchingEnd] = useState(false);
   const [pickMode, setPickMode] = useState<PickMode>(null);
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [realtimeFetchedAt, setRealtimeFetchedAt] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const enrichedRoutesRef = useRef<Set<string>>(new Set());
   const routeGeometryByRouteIdRef = useRef<Map<string, RouteFeature[]>>(new Map());
@@ -1011,8 +1178,17 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
     if (isLoading) return "Searching for best route options.";
     if (errorMessage) return `Search failed: ${errorMessage}`;
     if (!routes.length) return "No routes displayed yet.";
+
+    const disruptedCount = routes.filter(
+      (route) => route.realtimeStatus === "canceled" || route.realtimeStatus === "delayed"
+    ).length;
+
+    if (disruptedCount > 0) {
+      return `${routes.length} routes available. ${disruptedCount} route${disruptedCount > 1 ? "s are" : " is"} disrupted.`;
+    }
+
     return `${routes.length} route${routes.length > 1 ? "s are" : " is"} available.`;
-  }, [errorMessage, isLoading, routes.length]);
+  }, [errorMessage, isLoading, routes]);
 
   useEffect(() => {
     return () => abortRef.current?.abort();
@@ -1135,6 +1311,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
 
     setIsLoading(true);
     setErrorMessage(null);
+    setRealtimeFetchedAt(null);
 
     try {
       const data = await fetchFastestPath(payload, { signal: controller.signal });
@@ -1144,12 +1321,14 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
         startStop.stop_name,
         endStop.stop_name
       );
+      const realtimeAnnotated = await applyRealtimeStatusToRoutes(nextRoutes);
       if (!nextRoutes.length) {
         setErrorMessage("No routes returned by the backend.");
       }
       enrichedRoutesRef.current.clear();
       routeGeometryByRouteIdRef.current.clear();
-      setRoutes(nextRoutes);
+      setRoutes(realtimeAnnotated.routes);
+      setRealtimeFetchedAt(realtimeAnnotated.fetchedAt);
       setSelectedRouteId(null);
       setSelectedSegmentId(null);
     } catch (error) {
@@ -1175,9 +1354,9 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
   };
 
   const mapStatus = selectedSegment
-    ? `Segment: ${selectedSegment.line}`
+    ? `Segment: ${selectedSegment.line}${formatRealtimeLabel(selectedSegment.realtimeStatus, selectedSegment.realtimeDelaySeconds) ? ` (${formatRealtimeLabel(selectedSegment.realtimeStatus, selectedSegment.realtimeDelaySeconds)})` : ""}`
     : selectedRoute
-      ? `Route: ${selectedRoute.from.name} -> ${selectedRoute.to.name}`
+      ? `Route: ${selectedRoute.from.name} -> ${selectedRoute.to.name}${formatRealtimeLabel(selectedRoute.realtimeStatus, selectedRoute.realtimeDelaySeconds) ? ` (${formatRealtimeLabel(selectedRoute.realtimeStatus, selectedRoute.realtimeDelaySeconds)})` : ""}`
       : "Search results";
 
   useEffect(() => {
@@ -1753,6 +1932,7 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                 setSelectedRouteId(null);
                 setSelectedSegmentId(null);
                 setErrorMessage(null);
+                setRealtimeFetchedAt(null);
                 setDepartureDate(now.date);
                 setDepartureTime(now.time);
               }}
@@ -1778,9 +1958,14 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
             <div className="text-sm font-semibold uppercase tracking-[0.22em] text-neutral-400">
               Results
             </div>
-            {!!routes.length && (
-              <div className="text-xs text-neutral-500">{routes.length} route{routes.length > 1 ? "s" : ""}</div>
-            )}
+            <div className="text-right">
+              {!!routes.length && (
+                <div className="text-xs text-neutral-500">{routes.length} route{routes.length > 1 ? "s" : ""}</div>
+              )}
+              {!!realtimeFetchedAt && (
+                <div className="text-[10px] text-neutral-400">Realtime updated</div>
+              )}
+            </div>
           </div>
 
           {!!routes.length && (
@@ -1836,6 +2021,10 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
               const transferCount =
                 route.segments.filter((segment) => segment.mode !== "walk").length - 1;
               const walkMinutes = routeWalkMinutes(route);
+              const realtimeLabel = formatRealtimeLabel(
+                route.realtimeStatus,
+                route.realtimeDelaySeconds
+              );
 
               return (
                 <button
@@ -1867,6 +2056,11 @@ const FastestPathSearch = ({ onCloseAction }: Props) => {
                       {routeHighlights.leastWalkRouteId === route.id && (
                         <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 font-semibold text-amber-700">
                           Least walking
+                        </span>
+                      )}
+                      {realtimeLabel && (
+                        <span className={`rounded-full border px-2 py-0.5 font-semibold ${getRealtimeBadgeClass(route.realtimeStatus)}`}>
+                          {realtimeLabel}
                         </span>
                       )}
                     </div>
