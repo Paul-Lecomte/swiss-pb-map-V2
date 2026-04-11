@@ -128,6 +128,23 @@ const formatSecondsToClock = (seconds: number) => {
   return `${hh}:${mm}`;
 };
 
+const clockToSeconds = (clock: string) => {
+  const parts = String(clock).split(":").map((value) => Number(value));
+  if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) {
+    return null;
+  }
+  const hh = Number(parts[0]);
+  const mm = Number(parts[1]);
+  if (hh < 0 || hh > 47 || mm < 0 || mm > 59) return null;
+  return hh * 3600 + mm * 60;
+};
+
+const shiftClockBySeconds = (clock: string, deltaSeconds: number) => {
+  const base = clockToSeconds(clock);
+  if (base == null || !Number.isFinite(deltaSeconds)) return clock;
+  return formatSecondsToClock(base + deltaSeconds);
+};
+
 const formatDuration = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0m";
   const totalMinutes = Math.round(seconds / 60);
@@ -897,12 +914,30 @@ const normalizeRoutes = async (data: unknown): Promise<RouteSummary[]> => {
           ? option.duration_seconds
           : Math.max(0, points[points.length - 1].arrival_time - points[0].arrival_time);
 
+      let normalizedLastStop = lastStop;
+      const endpointTimesEqual = firstStop.time === lastStop.time;
+      if (endpointTimesEqual && durationSeconds > 0) {
+        normalizedLastStop = {
+          ...lastStop,
+          time: shiftClockBySeconds(firstStop.time, durationSeconds),
+        };
+
+        const finalSegment = segments[segments.length - 1];
+        const finalStopIndex = finalSegment?.stops.length ? finalSegment.stops.length - 1 : -1;
+        if (finalSegment && finalStopIndex >= 0) {
+          finalSegment.stops[finalStopIndex] = {
+            ...finalSegment.stops[finalStopIndex],
+            time: normalizedLastStop.time,
+          };
+        }
+      }
+
       return {
         id: `route-${optionIndex + 1}`,
         line: firstSegmentMeta.line,
         direction: firstSegmentMeta.direction,
         from: firstStop,
-        to: lastStop,
+        to: normalizedLastStop,
         duration: formatDuration(durationSeconds),
         segments,
       };
