@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import React, { useEffect, useState, useRef, useMemo } from "react";
-import { MapContainer, TileLayer, useMapEvents, useMap } from "react-leaflet";
+import { CircleMarker, MapContainer, TileLayer, Tooltip, useMapEvents, useMap } from "react-leaflet";
 import StopMarker from "@/components/stopmarker/StopMarker";
 import "leaflet/dist/leaflet.css";
 import ZoomControl from "../zoom/ZoomControl";
@@ -21,6 +21,88 @@ import FastestPathSearch from "@/components/fastest_path_search/FastestPathSearc
 // Layer visibility state type
 type LayerKeys = "railway" | "stations" | "tram" | "bus" | "trolleybus" | "ferry" | "backgroundPois";
 type FastestPathPickMode = "start" | "end" | null;
+
+type FastestPathVehicleMarker = {
+    tripId: string;
+    lat: number;
+    lon: number;
+    delaySeconds: number;
+    routeShortName?: string;
+};
+
+type FastestPathPickPoint = {
+    lat: number;
+    lon: number;
+    name?: string;
+};
+
+const normalizeTripToken = (tripId?: string | null) => {
+    if (!tripId) return "";
+    const trimmed = String(tripId).trim();
+    if (!trimmed) return "";
+    const base = trimmed.split(":")[0] ?? trimmed;
+    return base.trim().toLowerCase();
+};
+
+const tripIdsMatch = (left?: string | null, right?: string | null) => {
+    if (!left || !right) return false;
+    if (left === right) return true;
+    const leftToken = normalizeTripToken(left);
+    const rightToken = normalizeTripToken(right);
+    if (!leftToken || !rightToken) return false;
+    return leftToken === rightToken;
+};
+
+const animateFastestPathMarkers = (
+    previousMarkers: FastestPathVehicleMarker[],
+    nextMarkers: FastestPathVehicleMarker[],
+    setMarkers: React.Dispatch<React.SetStateAction<FastestPathVehicleMarker[]>>,
+    animationRef: React.MutableRefObject<number | null>,
+    cacheRef: React.MutableRefObject<FastestPathVehicleMarker[]>
+) => {
+    if (animationRef.current) {
+        try { cancelAnimationFrame(animationRef.current); } catch {}
+        animationRef.current = null;
+    }
+
+    if (!previousMarkers.length || !nextMarkers.length) {
+        cacheRef.current = nextMarkers;
+        setMarkers(nextMarkers);
+        return;
+    }
+
+    const previousByTrip = new Map(previousMarkers.map((marker) => [marker.tripId, marker]));
+    const durationMs = 2400;
+    const startTime = performance.now();
+
+    const frame = (now: number) => {
+        const t = Math.max(0, Math.min(1, (now - startTime) / durationMs));
+        const eased = 1 - Math.pow(1 - t, 3);
+
+        const blended = nextMarkers.map((marker) => {
+            const previous = previousByTrip.get(marker.tripId);
+            if (!previous) return marker;
+            return {
+                ...marker,
+                lat: previous.lat + (marker.lat - previous.lat) * eased,
+                lon: previous.lon + (marker.lon - previous.lon) * eased,
+            };
+        });
+
+        setMarkers(blended);
+
+        if (t < 1) {
+            animationRef.current = requestAnimationFrame(frame);
+            return;
+        }
+
+        cacheRef.current = nextMarkers;
+        setMarkers(nextMarkers);
+        animationRef.current = null;
+    };
+
+    animationRef.current = requestAnimationFrame(frame);
+};
 
 const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }: { onHamburger: () => void; layersVisible: LayerState; setLayersVisible: React.Dispatch<React.SetStateAction<LayerState>>; optionPrefs?: { showRealtimeOverlay: boolean; showRouteProgress: boolean; maxRoutes?: number } }) => {
     const [stops, setStops] = useState<any[]>([]);
@@ -79,6 +161,14 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
     const [fastestPathOpen, setFastestPathOpen] = useState(false);
     const [fastestPathRoutes, setFastestPathRoutes] = useState<any[]>([]);
     const [fastestPathHighlightedSegmentId, setFastestPathHighlightedSegmentId] = useState<string | null>(null);
+    const [fastestPathVehicleMarkers, setFastestPathVehicleMarkers] = useState<FastestPathVehicleMarker[]>([]);
+    const [fastestPathPickPoints, setFastestPathPickPoints] = useState<{ start: FastestPathPickPoint | null; end: FastestPathPickPoint | null }>({
+        start: null,
+        end: null,
+    });
+    const fastestPathVehicleTimerRef = useRef<number | null>(null);
+    const fastestPathVehicleAnimationRef = useRef<number | null>(null);
+    const fastestPathVehicleMarkersRef = useRef<FastestPathVehicleMarker[]>([]);
 
     // Ajout pour le highlight
     const [highlightedRouteId, setHighlightedRouteId] = useState<string | null>(null);
@@ -109,7 +199,158 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
         if (fastestPathOpen) return;
         setFastestPathRoutes([]);
         setFastestPathHighlightedSegmentId(null);
+        setFastestPathVehicleMarkers([]);
     }, [fastestPathOpen]);
+
+    const computeBboxFromFastestPathFeatures = (features: any[]) => {
+        let minLon = Number.POSITIVE_INFINITY;
+        let minLat = Number.POSITIVE_INFINITY;
+        let maxLon = Number.NEGATIVE_INFINITY;
+        let maxLat = Number.NEGATIVE_INFINITY;
+
+        features.forEach((feature) => {
+            const coords = feature?.geometry?.coordinates;
+            if (!Array.isArray(coords)) return;
+            coords.forEach((coord: any) => {
+                if (!Array.isArray(coord) || coord.length < 2) return;
+                const lon = Number(coord[0]);
+                const lat = Number(coord[1]);
+                if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+                minLon = Math.min(minLon, lon);
+                minLat = Math.min(minLat, lat);
+                maxLon = Math.max(maxLon, lon);
+                maxLat = Math.max(maxLat, lat);
+            });
+        });
+
+        if (!Number.isFinite(minLon) || !Number.isFinite(minLat) || !Number.isFinite(maxLon) || !Number.isFinite(maxLat)) {
+            return null;
+        }
+
+        const padLon = Math.max(0.0025, (maxLon - minLon) * 0.12);
+        const padLat = Math.max(0.0025, (maxLat - minLat) * 0.12);
+        return [minLon - padLon, minLat - padLat, maxLon + padLon, maxLat + padLat] as [number, number, number, number];
+    };
+
+    useEffect(() => {
+        if (!fastestPathOpen || !layersVisible.showVehicles || !fastestPathRoutes.length) {
+            setFastestPathVehicleMarkers([]);
+            fastestPathVehicleMarkersRef.current = [];
+            if (fastestPathVehicleAnimationRef.current) {
+                try { cancelAnimationFrame(fastestPathVehicleAnimationRef.current); } catch {}
+                fastestPathVehicleAnimationRef.current = null;
+            }
+            if (fastestPathVehicleTimerRef.current) {
+                try { window.clearInterval(fastestPathVehicleTimerRef.current); } catch {}
+                fastestPathVehicleTimerRef.current = null;
+            }
+            return;
+        }
+
+        const activeTripIds = Array.from(
+            new Set(
+                fastestPathRoutes
+                    .map((route: any) => route?.properties?.trip_id)
+                    .filter((tripId: any) => typeof tripId === "string" && !!tripId)
+            )
+        ) as string[];
+
+        if (!activeTripIds.length) {
+            setFastestPathVehicleMarkers([]);
+            return;
+        }
+
+        const bbox = computeBboxFromFastestPathFeatures(fastestPathRoutes);
+        if (!bbox) {
+            setFastestPathVehicleMarkers([]);
+            return;
+        }
+
+        const API_BASE_URL = process.env.API_BASE_URL
+            ? String(process.env.API_BASE_URL).replace(/\/$/, "")
+            : "http://localhost:3000/api";
+
+        let cancelled = false;
+
+        const loadFastestPathVehicles = async () => {
+            try {
+                const queryBbox = bbox.join(",");
+                const response = await fetch(`${API_BASE_URL}/realtime/interpolated?bbox=${queryBbox}`);
+                if (!response.ok) return;
+                const data = await response.json();
+                if (cancelled) return;
+
+                const markers: FastestPathVehicleMarker[] = [];
+                const features = Array.isArray(data?.features) ? data.features : [];
+
+                features.forEach((feature: any) => {
+                    const routeShortName = feature?.properties?.route_short_name;
+                    const vehicles = Array.isArray(feature?.properties?.vehicles) ? feature.properties.vehicles : [];
+                    vehicles.forEach((vehicle: any) => {
+                        const tripId = typeof vehicle?.trip_id === "string" ? vehicle.trip_id : null;
+                        if (!tripId) return;
+
+                        const belongsToFastestPath = activeTripIds.some((targetTripId) => tripIdsMatch(tripId, targetTripId));
+                        if (!belongsToFastestPath) return;
+
+                        const position = Array.isArray(vehicle?.position) ? vehicle.position : null;
+                        const lon = Number(position?.[0]);
+                        const lat = Number(position?.[1]);
+                        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+                        const delaySeconds = Number(vehicle?.delaySeconds ?? 0);
+                        markers.push({
+                            tripId,
+                            lat,
+                            lon,
+                            delaySeconds: Number.isFinite(delaySeconds) ? Math.round(delaySeconds) : 0,
+                            routeShortName: typeof routeShortName === "string" ? routeShortName : undefined,
+                        });
+                    });
+                });
+
+                const dedupedByTrip = new Map<string, FastestPathVehicleMarker>();
+                markers.forEach((marker) => {
+                    if (!dedupedByTrip.has(marker.tripId)) {
+                        dedupedByTrip.set(marker.tripId, marker);
+                    }
+                });
+
+                const nextMarkers = Array.from(dedupedByTrip.values());
+                animateFastestPathMarkers(
+                    fastestPathVehicleMarkersRef.current,
+                    nextMarkers,
+                    setFastestPathVehicleMarkers,
+                    fastestPathVehicleAnimationRef,
+                    fastestPathVehicleMarkersRef
+                );
+            } catch {
+                if (!cancelled) {
+                    setFastestPathVehicleMarkers([]);
+                    fastestPathVehicleMarkersRef.current = [];
+                }
+            }
+        };
+
+        loadFastestPathVehicles();
+
+        if (fastestPathVehicleTimerRef.current) {
+            try { window.clearInterval(fastestPathVehicleTimerRef.current); } catch {}
+        }
+        fastestPathVehicleTimerRef.current = window.setInterval(loadFastestPathVehicles, 5000);
+
+        return () => {
+            cancelled = true;
+            if (fastestPathVehicleAnimationRef.current) {
+                try { cancelAnimationFrame(fastestPathVehicleAnimationRef.current); } catch {}
+                fastestPathVehicleAnimationRef.current = null;
+            }
+            if (fastestPathVehicleTimerRef.current) {
+                try { window.clearInterval(fastestPathVehicleTimerRef.current); } catch {}
+                fastestPathVehicleTimerRef.current = null;
+            }
+        };
+    }, [fastestPathOpen, fastestPathRoutes, layersVisible.showVehicles]);
 
     const handleRouteClick = (route: any) => {
         // Si FastestPath est ouvert, on le ferme pour éviter les overlays concurrents.
@@ -210,12 +451,14 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
         prevBboxRef.current = null;
         setHighlightedRouteId(null);
         setRtData(null);
+        setFastestPathPickPoints({ start: null, end: null });
 
         setFastestPathOpen(true);
     };
 
     const handleCloseFastestPath = () => {
         setFastestPathOpen(false);
+        setFastestPathPickPoints({ start: null, end: null });
     };
 
     // Disable realtime polling while FastestPath is open
@@ -622,6 +865,17 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
             if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
             const nearestLocal = findNearestStopInList(stops, lat, lon);
             if (nearestLocal) {
+                const mode = fastestPathPickMode;
+                if (mode === "start" || mode === "end") {
+                    setFastestPathPickPoints((previous) => ({
+                        ...previous,
+                        [mode]: {
+                            lat: Number(nearestLocal.stop_lat),
+                            lon: Number(nearestLocal.stop_lon),
+                            name: nearestLocal.stop_name,
+                        },
+                    }));
+                }
                 window.dispatchEvent(new CustomEvent("app:fastest-path-stop", { detail: { mode: fastestPathPickMode, stop: nearestLocal } }));
                 window.dispatchEvent(new CustomEvent("app:stop-select", { detail: nearestLocal }));
                 setFastestPathPickMode(null);
@@ -639,6 +893,17 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
                     const features = Array.isArray(data?.features) ? data.features : [];
                     const nearestFetched = findNearestStopInList(features, lat, lon);
                     if (!nearestFetched) return;
+                    const mode = fastestPathPickMode;
+                    if (mode === "start" || mode === "end") {
+                        setFastestPathPickPoints((previous) => ({
+                            ...previous,
+                            [mode]: {
+                                lat: Number(nearestFetched.stop_lat),
+                                lon: Number(nearestFetched.stop_lon),
+                                name: nearestFetched.stop_name,
+                            },
+                        }));
+                    }
                     window.dispatchEvent(new CustomEvent("app:fastest-path-stop", { detail: { mode: fastestPathPickMode, stop: nearestFetched } }));
                     window.dispatchEvent(new CustomEvent("app:stop-select", { detail: nearestFetched }));
                     setFastestPathPickMode(null);
@@ -939,6 +1204,70 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
                             }
                             highlighted={isHighlightedSegment}
                         />
+                    );
+                })}
+
+                {fastestPathOpen && fastestPathPickPoints.start && (
+                    <CircleMarker
+                        center={[fastestPathPickPoints.start.lat, fastestPathPickPoints.start.lon]}
+                        radius={8}
+                        pathOptions={{ color: "#0ea5e9", fillColor: "#38bdf8", fillOpacity: 0.35, weight: 2 }}
+                    >
+                        <Tooltip direction="top" offset={[0, -8]} opacity={0.95}>
+                            <div style={{ fontSize: 11 }}>
+                                <strong>Departure</strong>
+                                <div>{fastestPathPickPoints.start.name || "Selected stop"}</div>
+                            </div>
+                        </Tooltip>
+                    </CircleMarker>
+                )}
+
+                {fastestPathOpen && fastestPathPickPoints.end && (
+                    <CircleMarker
+                        center={[fastestPathPickPoints.end.lat, fastestPathPickPoints.end.lon]}
+                        radius={8}
+                        pathOptions={{ color: "#f97316", fillColor: "#fb923c", fillOpacity: 0.35, weight: 2 }}
+                    >
+                        <Tooltip direction="top" offset={[0, -8]} opacity={0.95}>
+                            <div style={{ fontSize: 11 }}>
+                                <strong>Arrival</strong>
+                                <div>{fastestPathPickPoints.end.name || "Selected stop"}</div>
+                            </div>
+                        </Tooltip>
+                    </CircleMarker>
+                )}
+
+                {fastestPathOpen && showAllVehicles && fastestPathVehicleMarkers.map((vehicle) => {
+                    const statusColor = vehicle.delaySeconds >= 60
+                        ? "#f59e0b"
+                        : vehicle.delaySeconds <= -60
+                            ? "#0ea5e9"
+                            : "#10b981";
+                    const statusLabel = vehicle.delaySeconds >= 60
+                        ? `Delayed ${Math.max(1, Math.round(vehicle.delaySeconds / 60))}m`
+                        : vehicle.delaySeconds <= -60
+                            ? `Early ${Math.max(1, Math.round(Math.abs(vehicle.delaySeconds) / 60))}m`
+                            : "On time";
+
+                    return (
+                        <CircleMarker
+                            key={`fastest-vehicle-${vehicle.tripId}`}
+                            center={[vehicle.lat, vehicle.lon]}
+                            radius={6}
+                            pathOptions={{
+                                color: statusColor,
+                                fillColor: statusColor,
+                                fillOpacity: 0.95,
+                                weight: 2,
+                            }}
+                        >
+                            <Tooltip direction="top" offset={[0, -6]} opacity={0.95}>
+                                <div style={{ fontSize: 11, lineHeight: 1.25 }}>
+                                    <div><strong>{vehicle.routeShortName || "Vehicle"}</strong></div>
+                                    <div>{statusLabel}</div>
+                                </div>
+                            </Tooltip>
+                        </CircleMarker>
                     );
                 })}
 
