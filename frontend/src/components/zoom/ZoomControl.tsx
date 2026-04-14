@@ -43,24 +43,28 @@ const ZoomControlLeaflet = L.Control.extend({
     centerBtn.innerHTML = "●";
     centerBtn.title = "Recenter on your location";
 
-    let userCoords: [number, number] | null = null;
-
-    // Try to get user's geolocation
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            userCoords = [pos.coords.latitude, pos.coords.longitude];
-          },
-          (err) => {
-            console.warn("Geolocation error:", err.message);
-          }
-      );
-    }
-
     // Recenter map on user's position when the button is clicked
     centerBtn.onclick = () => {
-      if (userCoords) {
-        map.setView(userCoords, 15); // zoom level 15 = close view
+      try {
+        window.dispatchEvent(new CustomEvent("app:user-location-request"));
+      } catch {}
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+              map.setView(coords, Math.max(map.getZoom(), 15));
+            },
+            (err) => {
+              console.warn("Geolocation error:", err.message);
+              alert("User location not available");
+            },
+            {
+              enableHighAccuracy: true,
+              maximumAge: 2000,
+              timeout: 10000,
+            }
+        );
       } else {
         alert("User location not available");
       }

@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import React, { useEffect, useState, useRef, useMemo } from "react";
-import { CircleMarker, MapContainer, TileLayer, Tooltip, useMapEvents, useMap } from "react-leaflet";
+import { Circle, CircleMarker, MapContainer, TileLayer, Tooltip, useMapEvents, useMap } from "react-leaflet";
 import StopMarker from "@/components/stopmarker/StopMarker";
 import "leaflet/dist/leaflet.css";
 import ZoomControl from "../zoom/ZoomControl";
@@ -34,6 +34,13 @@ type FastestPathPickPoint = {
     lat: number;
     lon: number;
     name?: string;
+};
+
+type UserLocation = {
+    lat: number;
+    lon: number;
+    accuracy?: number;
+    timestamp: number;
 };
 
 const normalizeTripToken = (tripId?: string | null) => {
@@ -166,9 +173,11 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
         start: null,
         end: null,
     });
+    const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
     const fastestPathVehicleTimerRef = useRef<number | null>(null);
     const fastestPathVehicleAnimationRef = useRef<number | null>(null);
     const fastestPathVehicleMarkersRef = useRef<FastestPathVehicleMarker[]>([]);
+    const userLocationWatchIdRef = useRef<number | null>(null);
 
     // Ajout pour le highlight
     const [highlightedRouteId, setHighlightedRouteId] = useState<string | null>(null);
@@ -201,6 +210,86 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
         setFastestPathHighlightedSegmentId(null);
         setFastestPathVehicleMarkers([]);
     }, [fastestPathOpen]);
+
+    useEffect(() => {
+        if (typeof window === "undefined" || !navigator?.geolocation) return;
+
+        let cancelled = false;
+        let permissionStatus: PermissionStatus | null = null;
+
+        const stopWatchingLocation = () => {
+            if (userLocationWatchIdRef.current == null) return;
+            try { navigator.geolocation.clearWatch(userLocationWatchIdRef.current); } catch {}
+            userLocationWatchIdRef.current = null;
+        };
+
+        const startWatchingLocation = () => {
+            if (userLocationWatchIdRef.current != null) return;
+            const watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    if (cancelled) return;
+                    setUserLocation({
+                        lat: position.coords.latitude,
+                        lon: position.coords.longitude,
+                        accuracy: position.coords.accuracy,
+                        timestamp: position.timestamp,
+                    });
+                },
+                (error) => {
+                    if (error?.code === error.PERMISSION_DENIED) {
+                        stopWatchingLocation();
+                    }
+                },
+                {
+                    enableHighAccuracy: true,
+                    maximumAge: 2000,
+                    timeout: 12000,
+                }
+            );
+            userLocationWatchIdRef.current = watchId;
+        };
+
+        const handleUserLocationRequest = () => {
+            startWatchingLocation();
+        };
+
+        window.addEventListener("app:user-location-request", handleUserLocationRequest as EventListener);
+
+        const setupPermissionWatcher = async () => {
+            if (!("permissions" in navigator) || typeof navigator.permissions?.query !== "function") return;
+            try {
+                const status = await navigator.permissions.query({ name: "geolocation" as PermissionName });
+                if (cancelled) return;
+                permissionStatus = status;
+
+                if (status.state === "granted") {
+                    startWatchingLocation();
+                }
+
+                status.onchange = () => {
+                    if (status.state === "granted") {
+                        startWatchingLocation();
+                        return;
+                    }
+
+                    if (status.state === "denied") {
+                        stopWatchingLocation();
+                    }
+                };
+            } catch {
+                // Ignore Permissions API errors; tracking can still start after explicit user request.
+            }
+        };
+
+        setupPermissionWatcher();
+
+        return () => {
+            cancelled = true;
+            window.removeEventListener("app:user-location-request", handleUserLocationRequest as EventListener);
+            if (permissionStatus) permissionStatus.onchange = null;
+            stopWatchingLocation();
+        };
+    }, []);
 
     const computeBboxFromFastestPathFeatures = (features: any[]) => {
         let minLon = Number.POSITIVE_INFINITY;
@@ -1168,6 +1257,16 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
                 <MapRefBinder />
                 <MapEvents />
 
+                {userLocation && (
+                    <>
+                        <CircleMarker
+                            center={[userLocation.lat, userLocation.lon]}
+                            radius={6}
+                            pathOptions={{ color: "#2563eb", fillColor: "#2563eb", fillOpacity: 1, weight: 0 }}
+                        />
+                    </>
+                )}
+
                 {fastestPathOpen && showAllRoutes && fastestPathRoutes.map((route: any, idx: number) => {
                     const id = route?.properties?.segment_id || `fastest-${idx}`;
                     const segmentMode = route?.properties?.segment_mode;
@@ -1208,33 +1307,43 @@ const MapView  = ({ onHamburger, layersVisible, setLayersVisible, optionPrefs }:
                 })}
 
                 {fastestPathOpen && fastestPathPickPoints.start && (
-                    <CircleMarker
-                        center={[fastestPathPickPoints.start.lat, fastestPathPickPoints.start.lon]}
-                        radius={8}
-                        pathOptions={{ color: "#0ea5e9", fillColor: "#38bdf8", fillOpacity: 0.35, weight: 2 }}
-                    >
-                        <Tooltip direction="top" offset={[0, -8]} opacity={0.95}>
-                            <div style={{ fontSize: 11 }}>
-                                <strong>Departure</strong>
-                                <div>{fastestPathPickPoints.start.name || "Selected stop"}</div>
-                            </div>
-                        </Tooltip>
-                    </CircleMarker>
+                    <>
+                        <Circle
+                            center={[fastestPathPickPoints.start.lat, fastestPathPickPoints.start.lon]}
+                            radius={22}
+                            pathOptions={{ color: "#0ea5e9", fillColor: "#38bdf8", fillOpacity: 0.12, weight: 1 }}
+                        />
+                        <CircleMarker
+                            center={[fastestPathPickPoints.start.lat, fastestPathPickPoints.start.lon]}
+                            radius={9}
+                            pathOptions={{ color: "#ffffff", fillColor: "#0ea5e9", fillOpacity: 1, weight: 3 }}
+                        />
+                        <CircleMarker
+                            center={[fastestPathPickPoints.start.lat, fastestPathPickPoints.start.lon]}
+                            radius={3}
+                            pathOptions={{ color: "#ffffff", fillColor: "#ffffff", fillOpacity: 1, weight: 0 }}
+                        />
+                    </>
                 )}
 
                 {fastestPathOpen && fastestPathPickPoints.end && (
-                    <CircleMarker
-                        center={[fastestPathPickPoints.end.lat, fastestPathPickPoints.end.lon]}
-                        radius={8}
-                        pathOptions={{ color: "#f97316", fillColor: "#fb923c", fillOpacity: 0.35, weight: 2 }}
-                    >
-                        <Tooltip direction="top" offset={[0, -8]} opacity={0.95}>
-                            <div style={{ fontSize: 11 }}>
-                                <strong>Arrival</strong>
-                                <div>{fastestPathPickPoints.end.name || "Selected stop"}</div>
-                            </div>
-                        </Tooltip>
-                    </CircleMarker>
+                    <>
+                        <Circle
+                            center={[fastestPathPickPoints.end.lat, fastestPathPickPoints.end.lon]}
+                            radius={22}
+                            pathOptions={{ color: "#f97316", fillColor: "#fb923c", fillOpacity: 0.12, weight: 1 }}
+                        />
+                        <CircleMarker
+                            center={[fastestPathPickPoints.end.lat, fastestPathPickPoints.end.lon]}
+                            radius={9}
+                            pathOptions={{ color: "#ffffff", fillColor: "#f97316", fillOpacity: 1, weight: 3 }}
+                        />
+                        <CircleMarker
+                            center={[fastestPathPickPoints.end.lat, fastestPathPickPoints.end.lon]}
+                            radius={3}
+                            pathOptions={{ color: "#ffffff", fillColor: "#ffffff", fillOpacity: 1, weight: 0 }}
+                        />
+                    </>
                 )}
 
                 {fastestPathOpen && showAllVehicles && fastestPathVehicleMarkers.map((vehicle) => {
