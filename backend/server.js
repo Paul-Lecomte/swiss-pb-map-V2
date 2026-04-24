@@ -1,3 +1,4 @@
+// server.js - Main entry point for the Swiss GTFS Network API server
 require('dotenv').config();
 const express = require('express');
 const { errorHandler } = require('./middleware/errorHandler');
